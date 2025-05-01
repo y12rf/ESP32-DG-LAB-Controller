@@ -1,6 +1,6 @@
 # DG-LAB 3.0 Web 控制器
 
-这是一个基于 ESP32 的 Web 控制器项目，旨在通过浏览器界面控制 DG-LAB 3.0 型号的脉冲主机设备。该项目参考了 DG-LAB 官方开源项目 [DG-LAB-OPENSOURCE](https://github.com/DG-LAB-OPENSOURCE/DG-LAB-OPENSOURCE)，并进行了适配和扩展。
+这是一个基于 ESP32 的 Web 控制器项目，旨在通过浏览器界面控制 DG-LAB 3.0 型号的脉冲主机设备。该项目参考了 DG-LAB 官方开源项目 [DG-LAB-OPENSOURCE](https://github.com/DG-LAB-OPENSOURCE/DG-LAB-OPENSOURCE)的WEBUI界面，并进行了适配和扩展。
 
 ---
 
@@ -55,6 +55,5 @@
 ## 致谢
 
 - 感谢 DG-LAB 官方开源项目 [DG-LAB-OPENSOURCE](https://github.com/DG-LAB-OPENSOURCE/DG-LAB-OPENSOURCE) 提供的蓝牙协议文档和示例代码，为本项目的开发提供参考。
-- 如需了解更多关于 DG-LAB 设备的蓝牙协议和控制方法，请参考官方文档。
 
 --- 
