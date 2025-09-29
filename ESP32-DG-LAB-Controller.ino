@@ -67,6 +67,7 @@ BLERemoteCharacteristic* pCharacteristic_3_0_Notify = nullptr;
 bool deviceConnected = false;
 String connectedDeviceName = "";
 String connectedDeviceAddress = "";
+bool autoConnectEnabled = true;
 
 //通道强度控制
 int strengthA = 0;                // A通道强度 (2.0: 0-2047, 3.0: 0-200)
@@ -142,8 +143,34 @@ struct ScannedDevice {
   String name;
   String address;
   DeviceType type;
+  int rssi;
 };
 std::vector<ScannedDevice> scannedDevices;
+
+bool connectToDevice(const String& address, DeviceType type);
+
+bool autoConnectNearestDevice() {
+  if (deviceConnected) {
+    addLog("已连接设备，跳过自动连接");
+    return false;
+  }
+  if (scannedDevices.empty()) {
+    addLog("未扫描到可连接的设备");
+    return false;
+  }
+
+  const ScannedDevice* best = &scannedDevices[0];
+  for (auto& d : scannedDevices) {
+    if (d.rssi > best->rssi) best = &d;
+  }
+
+  addLog("自动连接距离最近的设备: " + best->name + " RSSI=" + String(best->rssi));
+  if (!connectToDevice(best->address, best->type)) {
+    addLog("自动连接失败");
+    return false;
+  }
+  return true;
+}
 
 //BLE扫描回调
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
@@ -155,6 +182,7 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
 
     if (name.startsWith(devicePrefix_2_0) || name.startsWith(devicePrefix_3_0)) {
       DeviceType type = name.startsWith(devicePrefix_2_0) ? DeviceType::DG2 : DeviceType::DG3;
+      int rssi = advertisedDevice.getRSSI();
       bool exist = false;
       for (auto& d : scannedDevices)
         if (d.address == address) {
@@ -162,8 +190,8 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
           break;
         }
       if (!exist) {
-        scannedDevices.push_back({ name, address, type });
-        addLog("发现设备: " + name);
+        scannedDevices.push_back({ name, address, type, rssi });
+        addLog("发现设备: " + name + " RSSI=" + String(rssi));
       }
     }
   }
@@ -558,6 +586,12 @@ void startBleScan() {
   scan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
   scan->setActiveScan(true);
   scan->start(3);
+  scan->stop();
+  if (autoConnectEnabled) {
+    autoConnectNearestDevice();
+  } else {
+    addLog("自动连接已关闭，等待手动操作");
+  }
 }
 
 /* ========== WEBUI ========== */
@@ -605,6 +639,10 @@ String makeHTML() {
   } else {
     html += "<p>未连接</p><a class='btn' href='/scan'>扫描设备</a>";
   }
+  html += "<p>自动连接: " + String(autoConnectEnabled ? "已开启" : "已关闭") + "</p>";
+  html += "<a class='btn btn-sm";
+  html += (autoConnectEnabled ? " btn-danger' href='/auto-connect?enabled=0'">关闭自动连接</a>"
+                              : " btn-success' href='/auto-connect?enabled=1'">开启自动连接</a>");
   html += "</div></div>";
 
   /* -------- 控制面板 -------- */
@@ -719,7 +757,7 @@ String makeHTML() {
     for (auto& d : scannedDevices) {
       html += "<a class='device-item' href='/connect?address=";
       html += d.address + "&type=" + String(deviceTypeToInt(d.type)) + "'>";
-      html += d.name + " (" + String(deviceTypeLabel(d.type)) + ")</a>";
+      html += d.name + " (" + String(deviceTypeLabel(d.type)) + ", RSSI=" + String(d.rssi) + "dBm)</a>";
     }
     html += "</div>";
   }
@@ -748,6 +786,15 @@ void setupWeb() {
   /* ---- 扫描设备 ---- */
   server.on("/scan", HTTP_GET, []() {
     startBleScan();
+    server.sendHeader("Location", "/");
+    server.send(302, "text/plain", "");
+  });
+
+  server.on("/auto-connect", HTTP_GET, []() {
+    if (server.hasArg("enabled")) {
+      autoConnectEnabled = server.arg("enabled").toInt() != 0;
+      addLog(String("自动连接功能") + (autoConnectEnabled ? "已开启" : "已关闭"));
+    }
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
