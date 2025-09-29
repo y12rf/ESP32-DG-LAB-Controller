@@ -4,6 +4,7 @@
 #include <BLEClient.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <stdint.h>
 #include <vector>
 
 //WiFi 配置
@@ -23,6 +24,39 @@ WebServer server(80);
 const char* devicePrefix_2_0 = "D-LAB";
 const char* devicePrefix_3_0 = "47";
 
+//设备类型
+enum class DeviceType : uint8_t {
+  None = 0,
+  DG2 = 1,
+  DG3 = 2,
+};
+
+DeviceType deviceType = DeviceType::None;
+
+const char* deviceTypeLabel(DeviceType type) {
+  switch (type) {
+    case DeviceType::DG2: return "2.0版本";
+    case DeviceType::DG3: return "3.0版本";
+    default: return "未知版本";
+  }
+}
+
+int deviceTypeToInt(DeviceType type) {
+  switch (type) {
+    case DeviceType::DG2: return 1;
+    case DeviceType::DG3: return 2;
+    default: return 0;
+  }
+}
+
+DeviceType parseDeviceType(int value) {
+  switch (value) {
+    case 1: return DeviceType::DG2;
+    case 2: return DeviceType::DG3;
+    default: return DeviceType::None;
+  }
+}
+
 //BLE 全局
 BLEClient* pClient = nullptr;
 BLERemoteCharacteristic* pCharacteristicA_2_0 = nullptr;
@@ -31,7 +65,6 @@ BLERemoteCharacteristic* pCharacteristic_3_0_Write = nullptr;
 BLERemoteCharacteristic* pCharacteristic_3_0_Notify = nullptr;
 
 bool deviceConnected = false;
-int deviceType = 0;  // 0 = none, 1 = 2.0, 2 = 3.0
 String connectedDeviceName = "";
 String connectedDeviceAddress = "";
 
@@ -108,18 +141,20 @@ void addLog(const String& msg) {
 struct ScannedDevice {
   String name;
   String address;
-  int type;  // 1 = 2.0, 2 = 3.0
+  DeviceType type;
 };
 std::vector<ScannedDevice> scannedDevices;
 
 //BLE扫描回调
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    if (!advertisedDevice.haveName()) return;
+
     String name = advertisedDevice.getName().c_str();
     String address = advertisedDevice.getAddress().toString().c_str();
 
     if (name.startsWith(devicePrefix_2_0) || name.startsWith(devicePrefix_3_0)) {
-      int type = name.startsWith(devicePrefix_2_0) ? 1 : 2;
+      DeviceType type = name.startsWith(devicePrefix_2_0) ? DeviceType::DG2 : DeviceType::DG3;
       bool exist = false;
       for (auto& d : scannedDevices)
         if (d.address == address) {
@@ -167,20 +202,34 @@ void notifyCallback(BLERemoteCharacteristic*, uint8_t* pData, size_t length, boo
 // ---------- HEX → bytes ----------
 std::vector<uint8_t> hexToBytes(const String& hex) {
   std::vector<uint8_t> v;
-  for (size_t i = 0; i < hex.length(); i += 2)
-    v.push_back(strtol(hex.substring(i, i + 2).c_str(), nullptr, 16));
+  if (hex.length() % 2 != 0) {
+    addLog("hexToBytes: 无效长度 " + hex);
+    return v;
+  }
+
+  for (size_t i = 0; i < hex.length(); i += 2) {
+    String part = hex.substring(i, i + 2);
+    char* endPtr = nullptr;
+    long value = strtol(part.c_str(), &endPtr, 16);
+    if (endPtr == nullptr || *endPtr != '\0' || value < 0 || value > 0xFF) {
+      addLog("hexToBytes: 无效数据 " + part);
+      v.clear();
+      return v;
+    }
+    v.push_back(static_cast<uint8_t>(value));
+  }
   return v;
 }
 
 // ---------- 获取当前波形 ----------
 const char* getCurrentWave() {
-  if (deviceType == 1) {
+  if (deviceType == DeviceType::DG2) {
     switch (selectedWave) {
       case 'a': return wave_2_0_A[waveIndex % WAVE_2_0_A_LENGTH];
       case 'b': return wave_2_0_B[waveIndex % WAVE_2_0_B_LENGTH];
       case 'c': return wave_2_0_C[waveIndex % WAVE_2_0_C_LENGTH];
     }
-  } else if (deviceType == 2) {
+  } else if (deviceType == DeviceType::DG3) {
     switch (selectedWave) {
       case 'a': return wave_3_0_A[waveIndex % WAVE_3_0_A_LENGTH];
       case 'b': return wave_3_0_B[waveIndex % WAVE_3_0_B_LENGTH];
@@ -192,7 +241,7 @@ const char* getCurrentWave() {
 
 /* ========== 2.0 设备数据发送 ========== */
 bool sendData_2_0(const String& hexA, const String& hexB) {
-  if (!deviceConnected || deviceType != 1) return false;
+  if (!deviceConnected || deviceType != DeviceType::DG2) return false;
 
   auto writeBuf = [&](BLERemoteCharacteristic* ch, const String& hex) -> bool {
     if (!ch) return false;
@@ -201,6 +250,7 @@ bool sendData_2_0(const String& hexA, const String& hexB) {
     if (!(canWriteRsp || canWriteNR)) return false;
 
     std::vector<uint8_t> bytes = hexToBytes(hex);
+    if (hex.length() > 0 && bytes.empty()) return false;
 #ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
     return ch->writeValue(bytes.data(), bytes.size(), canWriteRsp);
 #else
@@ -217,7 +267,7 @@ bool sendData_2_0(const String& hexA, const String& hexB) {
 
 /* ========== 2.0 设备强度设置 ========== */
 bool setStrength_2_0(int channelA, int channelB) {
-  if (!deviceConnected || deviceType != 1) {
+  if (!deviceConnected || deviceType != DeviceType::DG2) {
     addLog("设备未连接或非2.0设备");
     return false;
   }
@@ -259,7 +309,7 @@ bool sendData_3_0(const String& waveData,
                   bool changeStrength = false,
                   int strA = 0, int strB = 0,
                   uint8_t method = 0) {
-  if (!deviceConnected || deviceType != 2) return false;
+  if (!deviceConnected || deviceType != DeviceType::DG3) return false;
 
   auto writeBuf = [&](BLERemoteCharacteristic* ch, const std::vector<uint8_t>& bytes) -> bool {
     if (!ch) return false;
@@ -293,6 +343,7 @@ bool sendData_3_0(const String& waveData,
   commandBytes.push_back(strB & 0xFF);
 
   std::vector<uint8_t> waveBytes = hexToBytes(waveData);
+  if (waveData.length() > 0 && waveBytes.empty()) return false;
   commandBytes.insert(commandBytes.end(), waveBytes.begin(), waveBytes.end());
   while (commandBytes.size() < 20) commandBytes.push_back(0x00);
 
@@ -305,13 +356,13 @@ bool sendData(const String& hexData, const String& hexDataB) {
     addLog("设备未连接");
     return false;
   }
-  return (deviceType == 1) ? sendData_2_0(hexData, hexDataB)
-                           : sendData_3_0(hexData);
+  return (deviceType == DeviceType::DG2) ? sendData_2_0(hexData, hexDataB)
+                                         : sendData_3_0(hexData);
 }
 
 /* ========== 强度设置包装 ========== */
 bool setStrength(int channelA, int channelB, uint8_t method) {
-  if (!deviceConnected || deviceType != 2) {
+  if (!deviceConnected || deviceType != DeviceType::DG3) {
     addLog("设备未连接或非3.0设备");
     return false;
   }
@@ -324,7 +375,7 @@ bool setStrength(int channelA, int channelB, uint8_t method) {
 bool adjustStrengthA(int value, uint8_t method) {
   if (!deviceConnected) return false;
 
-  if (deviceType == 2) {  // 3.0
+  if (deviceType == DeviceType::DG3) {  // 3.0
     int newA = strengthA;
     if (method == 0x04) newA = min(200, strengthA + value);
     else if (method == 0x08) newA = max(0, strengthA - value);
@@ -342,7 +393,7 @@ bool adjustStrengthA(int value, uint8_t method) {
 bool adjustStrengthB(int value, uint8_t method) {
   if (!deviceConnected) return false;
 
-  if (deviceType == 2) {  // 3.0
+  if (deviceType == DeviceType::DG3) {  // 3.0
     int newB = strengthB;
     if (method == 0x01) newB = min(200, strengthB + value);
     else if (method == 0x02) newB = max(0, strengthB - value);
@@ -368,7 +419,7 @@ void handleWaveSend() {
     const char* data = getCurrentWave();
     bool success = false;
 
-    if (deviceType == 1) {  // ---- V2 ----
+    if (deviceType == DeviceType::DG2) {  // ---- V2 ----
       success = sendData_2_0(data, data);
     } else {                                  // ---- V3 ----
       String combined = String(data) + data;  // 复制一次
@@ -391,7 +442,7 @@ void disconnectDevice() {
     isSending = false;
     pClient->disconnect();
     deviceConnected = false;
-    deviceType = 0;
+    deviceType = DeviceType::None;
     connectedDeviceName = "";
     connectedDeviceAddress = "";
     pCharacteristicA_2_0 = nullptr;
@@ -407,11 +458,14 @@ void disconnectDevice() {
   }
 }
 
-bool connectToDevice(String address, int type) {
+bool connectToDevice(const String& address, DeviceType type) {
+  if (type == DeviceType::None) {
+    addLog("未知设备类型");
+    return false;
+  }
   if (deviceConnected) disconnectDevice();
   BLEDevice::getScan()->stop();  // 避免连接时仍在扫描
 
-  deviceType = type;
   addLog("连接: " + address);
 
   BLEAddress bleAddress(address.c_str());
@@ -420,6 +474,7 @@ bool connectToDevice(String address, int type) {
 
   if (!pClient->connect(bleAddress, BLE_ADDR_TYPE_RANDOM)) {
     addLog("连接失败");
+    deviceType = DeviceType::None;
     return false;
   }
 
@@ -427,7 +482,7 @@ bool connectToDevice(String address, int type) {
   pClient->setMTU(517);
   bool ok = false;
 
-  if (type == 1) {  // ----- 2.0 -----
+  if (type == DeviceType::DG2) {  // ----- 2.0 -----
     auto service = pClient->getService(BLEUUID(SERVICE_UUID_2_0));
     if (service) {
       pCharacteristicA_2_0 = service->getCharacteristic(BLEUUID(CHARACTERISTIC_A_UUID_2_0));
@@ -449,7 +504,7 @@ bool connectToDevice(String address, int type) {
         }
       }
     }
-  } else {  // ----- 3.0 -----
+  } else if (type == DeviceType::DG3) {  // ----- 3.0 -----
     auto service = pClient->getService(BLEUUID(SERVICE_UUID_3_0));
     if (service) {
       pCharacteristic_3_0_Write = service->getCharacteristic(BLEUUID(CHARACTERISTIC_WRITE_3_0));
@@ -478,14 +533,17 @@ bool connectToDevice(String address, int type) {
   if (!ok) {
     addLog("服务/特性获取失败");
     pClient->disconnect();
+    deviceType = DeviceType::None;
     return false;
   }
 
+  deviceType = type;
   deviceConnected = true;
   for (auto& d : scannedDevices)
     if (d.address == address) connectedDeviceName = d.name;
   connectedDeviceAddress = address;
-  if (type == 2) { strengthA = strengthB = 0; }
+  if (connectedDeviceName.length() == 0) connectedDeviceName = address;
+  if (type == DeviceType::DG3) { strengthA = strengthB = 0; }
   orderNo = 0;
   isInputAllowed = true;
   waitingForResponse = false;
@@ -535,8 +593,8 @@ String makeHTML() {
   /* -------- 设备状态 -------- */
   html += "<div class='panel'><h2>设备状态</h2><div class='center'>";
   if (deviceConnected) {
-    html += "<p>已连接: " + connectedDeviceName + " (" + String(deviceType == 1 ? "2.0版本" : "3.0版本") + ")</p>";
-    if (deviceType == 2) {
+    html += "<p>已连接: " + connectedDeviceName + " (" + String(deviceTypeLabel(deviceType)) + ")</p>";
+    if (deviceType == DeviceType::DG3) {
       html += "<p>通道A强度: " + String(strengthA) + "/200</p>";
       html += "<p>通道B强度: " + String(strengthB) + "/200</p>";
     } else {
@@ -559,7 +617,7 @@ String makeHTML() {
       s += "<div class='strength-control'><h3>通道";
       s += (ch == 'a' ? 'A' : 'B');
       s += "</h3><div class='strength-display'>";
-      s += String(deviceType == 1 ? strength / 7 : strength);
+      s += String(deviceType == DeviceType::DG2 ? strength / 7 : strength);
       s += "</div><div>";
       bool isA = (ch == 'a');
       s += "<a class='btn btn-primary ctrl-btn' href='/strength?channel=";
@@ -599,7 +657,7 @@ String makeHTML() {
       s += "&value=0&method=";
       s += (isA ? 12 : 3);
       s += "'>归零</a>";
-      if (deviceType == 2) {
+      if (deviceType == DeviceType::DG3) {
         s += "<a class='btn btn-sm btn-success' href='/strength?channel=";
         s += ch;
         s += "&value=100&method=";
@@ -660,8 +718,8 @@ String makeHTML() {
     html += "<div class='panel'><h2>可用设备</h2>";
     for (auto& d : scannedDevices) {
       html += "<a class='device-item' href='/connect?address=";
-      html += d.address + "&type=" + String(d.type) + "'>";
-      html += d.name + " (" + (d.type == 1 ? "2.0版本" : "3.0版本") + ")</a>";
+      html += d.address + "&type=" + String(deviceTypeToInt(d.type)) + "'>";
+      html += d.name + " (" + String(deviceTypeLabel(d.type)) + ")</a>";
     }
     html += "</div>";
   }
@@ -697,7 +755,12 @@ void setupWeb() {
   /* ---- 连接设备 ---- */
   server.on("/connect", HTTP_GET, []() {
     if (server.hasArg("address") && server.hasArg("type")) {
-      connectToDevice(server.arg("address"), server.arg("type").toInt());
+      DeviceType type = parseDeviceType(server.arg("type").toInt());
+      if (type == DeviceType::None) {
+        addLog("连接失败: 未知设备类型");
+      } else if (!connectToDevice(server.arg("address"), type)) {
+        addLog("连接失败: 类型无效或连接错误");
+      }
     }
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
