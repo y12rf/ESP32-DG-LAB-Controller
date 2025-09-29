@@ -828,7 +828,8 @@ void setupWeb() {
 void setup() {
   Serial.begin(19200);
   Serial.println("DG-LAB 控制器启动");
-  WiFi.softAP(ssid, password);
+  // 隐藏热点 SSID 以避免被直接发现
+  WiFi.softAP(ssid, password, 1, 1);
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
   BLEDevice::init("ESP32_DGLAB_Client");
