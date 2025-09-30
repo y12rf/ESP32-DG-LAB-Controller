@@ -777,9 +777,7 @@ void setupWeb() {
 
   server.on("/", HTTP_GET, []() {
     String page = makeHTML();
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "text/html", "");
-    server.sendContent(page);
+    server.send(200, "text/html", page);
     server.client().stop();
   });
 
