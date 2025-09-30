@@ -69,6 +69,11 @@ String connectedDeviceName = "";
 String connectedDeviceAddress = "";
 bool autoConnectEnabled = true;
 
+// 自动扫描控制
+const unsigned long autoScanIntervalMs = 10000;  // 扫描间隔 10 秒
+unsigned long lastScanFinished = 0;
+bool scanInProgress = false;
+
 //通道强度控制
 int strengthA = 0;                // A通道强度 (2.0: 0-2047, 3.0: 0-200)
 int strengthB = 0;                // B通道强度
@@ -580,6 +585,11 @@ bool connectToDevice(const String& address, DeviceType type) {
 
 /* ========== 扫描 ========== */
 void startBleScan() {
+  if (scanInProgress) {
+    addLog("扫描进行中，忽略新的扫描请求");
+    return;
+  }
+  scanInProgress = true;
   addLog("开始扫描");
   scannedDevices.clear();
   auto scan = BLEDevice::getScan();
@@ -587,10 +597,20 @@ void startBleScan() {
   scan->setActiveScan(true);
   scan->start(3);
   scan->stop();
+  scanInProgress = false;
+  lastScanFinished = millis();
   if (autoConnectEnabled) {
     autoConnectNearestDevice();
   } else {
     addLog("自动连接已关闭，等待手动操作");
+  }
+}
+
+void handleAutoScan() {
+  if (scanInProgress) return;
+  unsigned long now = millis();
+  if (now - lastScanFinished >= autoScanIntervalMs) {
+    startBleScan();
   }
 }
 
@@ -879,10 +899,12 @@ void setup() {
   BLEDevice::init("ESP32_DGLAB_Client");
   setupWeb();
   addLog("系统初始化完成");
+  lastScanFinished = millis();
 }
 
 void loop() {
   server.handleClient();
   handleWaveSend();
+  handleAutoScan();
   delay(10);
 }
