@@ -778,7 +778,6 @@ void setupWeb() {
   server.on("/", HTTP_GET, []() {
     String page = makeHTML();
     server.send(200, "text/html", page);
-    server.client().stop();
   });
 
   /* ---- 扫描设备 ---- */
