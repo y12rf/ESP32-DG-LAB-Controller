@@ -640,9 +640,9 @@ String makeHTML() {
     html += "<p>未连接</p><a class='btn' href='/scan'>扫描设备</a>";
   }
   html += "<p>自动连接: " + String(autoConnectEnabled ? "已开启" : "已关闭") + "</p>";
-  html += "<a class='btn btn-sm";
-  html += (autoConnectEnabled ? " btn-danger' href='/auto-connect?enabled=0'">关闭自动连接</a>"
-                              : " btn-success' href='/auto-connect?enabled=1'">开启自动连接</a>");
+  html += autoConnectEnabled
+              ? "<a class='btn btn-sm btn-danger' href='/auto-connect?enabled=0'>关闭自动连接</a>"
+              : "<a class='btn btn-sm btn-success' href='/auto-connect?enabled=1'>开启自动连接</a>";
   html += "</div></div>";
 
   /* -------- 控制面板 -------- */
