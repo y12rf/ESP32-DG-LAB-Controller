@@ -213,6 +213,8 @@ class MyClientCallback : public BLEClientCallbacks {
   }
 };
 
+static MyClientCallback clientCallbacks;
+
 // ---------- Notify 数据回调（3.0） ----------
 void notifyCallback(BLERemoteCharacteristic*, uint8_t* pData, size_t length, bool isNotify) {
   if (!isNotify || length < 4) return;
@@ -503,7 +505,7 @@ bool connectToDevice(const String& address, DeviceType type) {
 
   BLEAddress bleAddress(address.c_str());
   pClient = BLEDevice::createClient();
-  pClient->setClientCallbacks(new MyClientCallback());
+  pClient->setClientCallbacks(&clientCallbacks);
 
   if (!pClient->connect(bleAddress, BLE_ADDR_TYPE_RANDOM)) {
     addLog("连接失败");
