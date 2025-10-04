@@ -202,6 +202,8 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   }
 };
 
+static MyAdvertisedDeviceCallbacks scanCallbacks;
+
 // ---------- BLE 连接 / 断开回调 ----------
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient*) override {
@@ -593,7 +595,7 @@ void startBleScan() {
   addLog("开始扫描");
   scannedDevices.clear();
   auto scan = BLEDevice::getScan();
-  scan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  scan->setAdvertisedDeviceCallbacks(&scanCallbacks);
   scan->setActiveScan(true);
   scan->start(3);
   scan->stop();
