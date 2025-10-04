@@ -367,8 +367,9 @@ bool sendData_3_0(const String& waveData,
   std::vector<uint8_t> commandBytes;
   commandBytes.push_back(0xB0);  // 指令头
 
+  bool issuedChange = changeStrength && isInputAllowed;
   uint8_t seqMethod = 0x00;
-  if (changeStrength && isInputAllowed) {
+  if (issuedChange) {
     orderNo = (orderNo + 1) & 0x0F;  // 序列号循环 1-15
     if (orderNo == 0) orderNo = 1;
     seqMethod = (orderNo << 4) | (method & 0x0F);
@@ -384,7 +385,14 @@ bool sendData_3_0(const String& waveData,
   commandBytes.insert(commandBytes.end(), waveBytes.begin(), waveBytes.end());
   while (commandBytes.size() < 20) commandBytes.push_back(0x00);
 
-  return writeBuf(pCharacteristic_3_0_Write, commandBytes);
+  bool success = writeBuf(pCharacteristic_3_0_Write, commandBytes);
+  if (!success && issuedChange) {
+    isInputAllowed = true;
+    waitingForResponse = false;
+    addLog("写入失败，已回滚输入状态");
+  }
+
+  return success;
 }
 
 /* ========== 统一数据发送 ========== */
