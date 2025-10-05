@@ -597,6 +597,10 @@ bool connectToDevice(const String& address, DeviceType type) {
 
 /* ========== 扫描 ========== */
 void startBleScan() {
+  if (deviceConnected) {
+    addLog("设备已连接，跳过扫描请求");
+    return;
+  }
   if (scanInProgress) {
     addLog("扫描进行中，忽略新的扫描请求");
     return;
@@ -619,6 +623,10 @@ void startBleScan() {
 }
 
 void handleAutoScan() {
+  if (deviceConnected) {
+    addLog("设备已连接，跳过自动扫描");
+    return;
+  }
   if (scanInProgress) return;
   unsigned long now = millis();
   if (now - lastScanFinished >= autoScanIntervalMs) {
@@ -669,7 +677,7 @@ String makeHTML() {
     }
     html += "<a class='btn btn-danger' href='/disconnect'>断开连接</a>";
   } else {
-    html += "<p>未连接</p><a class='btn' href='/scan'>扫描设备</a>";
+    html += "<p>未连接</p><!-- <a class='btn' href='/scan'>扫描设备</a> -->";
   }
   html += "<p>自动连接: " + String(autoConnectEnabled ? "已开启" : "已关闭") + "</p>";
   html += autoConnectEnabled
