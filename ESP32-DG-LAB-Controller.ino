@@ -527,8 +527,22 @@ bool connectToDevice(const String& address, DeviceType type) {
   pClient->setMTU(517);
   bool ok = false;
 
+  auto getServiceWithRetry = [&](const BLEUUID& uuid) -> BLERemoteService* {
+    const int maxRetries = 10;
+    const unsigned long retryDelayMs = 150;  // 100-200ms 之间
+    BLERemoteService* service = nullptr;
+    for (int attempt = 0; attempt < maxRetries && !service; ++attempt) {
+      service = pClient->getService(uuid);
+      if (service || attempt == maxRetries - 1) {
+        break;
+      }
+      delay(retryDelayMs);
+    }
+    return service;
+  };
+
   if (type == DeviceType::DG2) {  // ----- 2.0 -----
-    auto service = pClient->getService(BLEUUID(SERVICE_UUID_2_0));
+    auto service = getServiceWithRetry(BLEUUID(SERVICE_UUID_2_0));
     if (service) {
       pCharacteristicA_2_0 = service->getCharacteristic(BLEUUID(CHARACTERISTIC_A_UUID_2_0));
       pCharacteristicB_2_0 = service->getCharacteristic(BLEUUID(CHARACTERISTIC_B_UUID_2_0));
@@ -550,7 +564,7 @@ bool connectToDevice(const String& address, DeviceType type) {
       }
     }
   } else if (type == DeviceType::DG3) {  // ----- 3.0 -----
-    auto service = pClient->getService(BLEUUID(SERVICE_UUID_3_0));
+    auto service = getServiceWithRetry(BLEUUID(SERVICE_UUID_3_0));
     if (service) {
       pCharacteristic_3_0_Write = service->getCharacteristic(BLEUUID(CHARACTERISTIC_WRITE_3_0));
       pCharacteristic_3_0_Notify = service->getCharacteristic(BLEUUID(CHARACTERISTIC_NOTIFY_3_0));
