@@ -73,6 +73,7 @@ bool autoConnectEnabled = true;
 const unsigned long autoScanIntervalMs = 10000;  // 扫描间隔 10 秒
 unsigned long lastScanFinished = 0;
 bool scanInProgress = false;
+bool autoScanSuppressedLogged = false;
 
 //通道强度控制
 int strengthA = 0;                // A通道强度 (2.0: 0-2047, 3.0: 0-200)
@@ -638,9 +639,13 @@ void startBleScan() {
 
 void handleAutoScan() {
   if (deviceConnected) {
-    addLog("设备已连接，跳过自动扫描");
+    if (!autoScanSuppressedLogged) {
+      addLog("设备已连接，跳过自动扫描");
+      autoScanSuppressedLogged = true;
+    }
     return;
   }
+  autoScanSuppressedLogged = false;
   if (scanInProgress) return;
   unsigned long now = millis();
   if (now - lastScanFinished >= autoScanIntervalMs) {
