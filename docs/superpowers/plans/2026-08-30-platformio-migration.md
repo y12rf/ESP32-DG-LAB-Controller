@@ -12,6 +12,7 @@
 
 - Use `board = esp32dev` and `framework = arduino`.
 - Keep the serial monitor speed at `19200`.
+- Use the `huge_app.csv` partition table because the linked firmware exceeds the default application partition.
 - Do not add third-party libraries.
 - Do not alter Wi-Fi, Web, BLE, or waveform-control behavior.
 - Do not split the existing application into additional modules during this migration.
@@ -48,10 +49,11 @@ Create `platformio.ini` with:
 
 ```ini
 [env:esp32dev]
-platform = espressif32
+platform = platformio/espressif32@6.13.0
 board = esp32dev
 framework = arduino
 monitor_speed = 19200
+board_build.partitions = huge_app.csv
 ```
 
 - [ ] **Step 3: Convert the sketch to a standard C++ source file**

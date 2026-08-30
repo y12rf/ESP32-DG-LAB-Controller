@@ -1,3 +1,5 @@
 Agent.md
 build/
 docs/
+.pio/
+.vscode/

@@ -10,7 +10,7 @@
 
 ## PlatformIO 配置
 
-默认环境使用 Espressif 32 平台、`esp32dev` 开发板和 Arduino 框架。串口监视器波特率设为代码当前使用的 `19200`。项目没有第三方库依赖，WiFi、WebServer 和 BLE 均由 Arduino-ESP32 框架提供。
+默认环境固定使用官方 Espressif 32 平台 `6.13.0`、`esp32dev` 开发板和 Arduino 框架。串口监视器波特率设为代码当前使用的 `19200`。由于 BLE 和 Web 固件超过默认应用分区容量，使用 `huge_app.csv`（3 MB 应用区、无 OTA）分区方案。项目没有第三方库依赖，WiFi、WebServer 和 BLE 均由 Arduino-ESP32 框架提供。
 
 ## 配套调整
 

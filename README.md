@@ -28,14 +28,29 @@
 
 ### 软件要求
 
-- Arduino IDE 或 PlatformIO 环境。
+- [PlatformIO](https://platformio.org/) 环境（PlatformIO IDE 或 PlatformIO Core）。
 
 ### 安装步骤
 
-1. 下载或克隆本项目代码
-2. 在Arudino IDE中打开项目文件并上传代码到ESP32
-3. 上传完成后，ESP32 会启动并创建一个名为 ESP32-Controller 的 Wi-Fi 隐藏热点。
-4. 在终端设备上手动添加并连接该 Wi-Fi 热点。在浏览器中访问 http://192.168.4.1 ，即可进入控制界面。
+1. 下载或克隆本项目代码。
+2. 使用 PlatformIO 打开项目根目录。
+3. 连接 ESP32 开发板，构建并上传固件：
+
+   ```bash
+   pio run
+   pio run --target upload
+   ```
+
+4. 如需查看串口日志，运行：
+
+   ```bash
+   pio device monitor
+   ```
+
+5. 上传完成后，ESP32 会启动并创建一个名为 `ESP32-Controller` 的 Wi-Fi 隐藏热点。
+6. 在终端设备上手动添加并连接该 Wi-Fi 热点。在浏览器中访问 `http://192.168.4.1/`，即可进入控制界面。
+
+> 固件包含 Web 与 BLE 功能，体积超过默认应用分区。项目已使用 `huge_app.csv`（3 MB 应用区）分区方案，因此不支持 OTA 双分区升级。
 
 ---
 
