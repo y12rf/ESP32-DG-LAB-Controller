@@ -555,10 +555,13 @@ bool connectToDevice(const String& address, DeviceType type) {
       BLERemoteCharacteristic* pPwmAB2 =
         service->getCharacteristic(BLEUUID("955a1504-0fe2-f5aa-a094-84b8d4f3e8ad"));
       if (pPwmAB2 && pPwmAB2->canRead()) {
-        String valueStr = pPwmAB2->readValue();  // ← 用 Arduino String
-        if (valueStr.length() >= 3) {
-          uint8_t valueBytes[3];
-          valueStr.getBytes(valueBytes, 4);
+        auto value = pPwmAB2->readValue();
+        if (value.length() >= 3) {
+          uint8_t valueBytes[3] = {
+            static_cast<uint8_t>(value[0]),
+            static_cast<uint8_t>(value[1]),
+            static_cast<uint8_t>(value[2]),
+          };
           uint32_t data = (valueBytes[2] << 16) | (valueBytes[1] << 8) | valueBytes[0];
           strengthA = (data >> 11) & 0x7FF;
           strengthB = data & 0x7FF;
