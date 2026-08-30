@@ -26,8 +26,12 @@ StrengthController::StrengthController()
     : pendingA_{false, StrengthOperation::Increase, 0},
       pendingB_{false, StrengthOperation::Increase, 0}, strengthA_(0),
       strengthB_(0), sequence_(0), inFlightSequence_(0), waiting_(false),
+      feedbackSynchronized_(false),
       sentAt_(0), preparedA_{false, StrengthOperation::Increase, 0},
-      preparedB_{false, StrengthOperation::Increase, 0}, hasPrepared_(false) {}
+      preparedB_{false, StrengthOperation::Increase, 0},
+      preparedRemainderA_{false, StrengthOperation::Increase, 0},
+      preparedRemainderB_{false, StrengthOperation::Increase, 0},
+      hasPrepared_(false) {}
 
 int StrengthController::clamp(int value) {
   if (value < 0) return 0;
@@ -49,12 +53,18 @@ const StrengthController::Intent& StrengthController::intent(Channel channel) co
 
 void StrengthController::merge(Intent& target, StrengthOperation operation, int value) {
   if (value < 0) value = 0;
+  if (operation != StrengthOperation::Absolute && value == 0) return;
   if (operation == StrengthOperation::Absolute) {
     target = {true, operation, clamp(value)};
     return;
   }
-  if (!target.pending || target.operation == StrengthOperation::Absolute) {
+  if (!target.pending) {
     target = {true, operation, value};
+    return;
+  }
+  if (target.operation == StrengthOperation::Absolute) {
+    target.value = clamp(target.value +
+                         (operation == StrengthOperation::Increase ? value : -value));
     return;
   }
   if (target.operation == operation) {
@@ -66,6 +76,7 @@ void StrengthController::merge(Intent& target, StrengthOperation operation, int 
       target.operation = operation;
     }
   }
+  if (target.value == 0) target.pending = false;
 }
 
 RequestDisposition StrengthController::requestStrength(Channel channel,
@@ -73,7 +84,8 @@ RequestDisposition StrengthController::requestStrength(Channel channel,
                                                         int value, uint32_t) {
   if (value < 0) return RequestDisposition::Rejected;
   merge(intent(channel), operation, value);
-  return waiting_ ? RequestDisposition::Queued : RequestDisposition::Prepared;
+  return waiting_ || hasPrepared_ ? RequestDisposition::Queued
+                                  : RequestDisposition::Prepared;
 }
 
 bool StrengthController::consume(Intent& target, int current, int& next,
@@ -83,6 +95,7 @@ bool StrengthController::consume(Intent& target, int current, int& next,
   amount = target.value;
   if (op == StrengthOperation::Absolute) {
     next = clamp(amount);
+    amount = next;
     target.pending = false;
     return true;
   }
@@ -96,25 +109,33 @@ bool StrengthController::consume(Intent& target, int current, int& next,
 
 bool StrengthController::prepareCommand(uint32_t now, PreparedStrengthCommand& out) {
   (void)now;
-  out = {0, strengthA_, strengthB_, false};
-  if (waiting_) return false;
+  out = {0, 0, 0, strengthA_, strengthB_, false};
+  if (waiting_ || hasPrepared_) return false;
+  Intent originalA = pendingA_;
+  Intent originalB = pendingB_;
   Intent copyA = pendingA_;
   Intent copyB = pendingB_;
-  int nextA = strengthA_, nextB = strengthB_, amount = 0;
+  int nextA = strengthA_, nextB = strengthB_, amountA = 0, amountB = 0;
   StrengthOperation opA = StrengthOperation::Absolute;
   StrengthOperation opB = StrengthOperation::Absolute;
-  bool hasA = consume(copyA, strengthA_, nextA, opA, amount);
-  bool hasB = consume(copyB, strengthB_, nextB, opB, amount);
+  bool hasA = consume(copyA, strengthA_, nextA, opA, amountA);
+  bool hasB = consume(copyB, strengthB_, nextB, opB, amountB);
   if (!hasA && !hasB) return false;
-  preparedA_ = copyA;
-  preparedB_ = copyB;
+  pendingA_ = {false, StrengthOperation::Increase, 0};
+  pendingB_ = {false, StrengthOperation::Increase, 0};
+  preparedA_ = originalA;
+  preparedB_ = originalB;
+  preparedRemainderA_ = copyA;
+  preparedRemainderB_ = copyB;
   hasPrepared_ = true;
   uint8_t method = 0;
   if (hasA) method |= opA == StrengthOperation::Increase ? 0x04 : opA == StrengthOperation::Decrease ? 0x08 : 0x0C;
   if (hasB) method |= opB == StrengthOperation::Increase ? 0x01 : opB == StrengthOperation::Decrease ? 0x02 : 0x03;
   uint8_t seq = static_cast<uint8_t>((sequence_ % 15) + 1);
-  out = {static_cast<uint8_t>((seq << 4) | method), static_cast<uint8_t>(nextA),
-         static_cast<uint8_t>(nextB), true};
+  out = {static_cast<uint8_t>((seq << 4) | method),
+         static_cast<uint8_t>(hasA && opA != StrengthOperation::Absolute ? amountA : hasA ? nextA : 0),
+         static_cast<uint8_t>(hasB && opB != StrengthOperation::Absolute ? amountB : hasB ? nextB : 0),
+         static_cast<uint8_t>(nextA), static_cast<uint8_t>(nextB), true};
   return true;
 }
 
@@ -122,41 +143,58 @@ void StrengthController::commitPrepared(const PreparedStrengthCommand& command,
                                          uint32_t now) {
   if (!command.valid) return;
   if (hasPrepared_) {
-    pendingA_ = preparedA_;
-    pendingB_ = preparedB_;
+    Intent queuedA = pendingA_;
+    Intent queuedB = pendingB_;
+    pendingA_ = preparedRemainderA_;
+    pendingB_ = preparedRemainderB_;
+    if (queuedA.pending) merge(pendingA_, queuedA.operation, queuedA.value);
+    if (queuedB.pending) merge(pendingB_, queuedB.operation, queuedB.value);
     hasPrepared_ = false;
   }
   sequence_ = static_cast<uint8_t>(command.sequenceMethod >> 4);
   inFlightSequence_ = sequence_;
-  strengthA_ = command.strengthA;
-  strengthB_ = command.strengthB;
+  strengthA_ = command.targetStrengthA;
+  strengthB_ = command.targetStrengthB;
   waiting_ = true;
+  feedbackSynchronized_ = false;
   sentAt_ = now;
 }
 
 void StrengthController::rollbackPrepared(const PreparedStrengthCommand& command) {
   if (!command.valid) return;
-  hasPrepared_ = false;
-  waiting_ = false;
-  inFlightSequence_ = 0;
-  hasPrepared_ = false;
+  if (hasPrepared_) {
+    Intent queuedA = pendingA_;
+    Intent queuedB = pendingB_;
+    pendingA_ = preparedA_;
+    pendingB_ = preparedB_;
+    if (queuedA.pending) merge(pendingA_, queuedA.operation, queuedA.value);
+    if (queuedB.pending) merge(pendingB_, queuedB.operation, queuedB.value);
+    hasPrepared_ = false;
+  }
 }
 
-void StrengthController::onStrengthResponse(uint8_t sequence, uint8_t currentA,
+bool StrengthController::onStrengthResponse(uint8_t sequence, uint8_t currentA,
                                              uint8_t currentB, uint32_t) {
   strengthA_ = currentA;
   strengthB_ = currentB;
   if (waiting_ && sequence == inFlightSequence_) {
     waiting_ = false;
     inFlightSequence_ = 0;
+    feedbackSynchronized_ = true;
+    return true;
   }
+  if (!waiting_) feedbackSynchronized_ = true;
+  return false;
 }
 
-void StrengthController::tick(uint32_t now) {
+bool StrengthController::tick(uint32_t now) {
   if (waiting_ && elapsed(now, sentAt_, kStrengthResponseTimeoutMs)) {
     waiting_ = false;
     inFlightSequence_ = 0;
+    feedbackSynchronized_ = false;
+    return true;
   }
+  return false;
 }
 
 void StrengthController::resetConnection() {
@@ -165,9 +203,12 @@ void StrengthController::resetConnection() {
   strengthA_ = strengthB_ = 0;
   sequence_ = inFlightSequence_ = 0;
   waiting_ = false;
+  feedbackSynchronized_ = false;
   sentAt_ = 0;
   preparedA_ = {false, StrengthOperation::Increase, 0};
   preparedB_ = {false, StrengthOperation::Increase, 0};
+  preparedRemainderA_ = {false, StrengthOperation::Increase, 0};
+  preparedRemainderB_ = {false, StrengthOperation::Increase, 0};
   hasPrepared_ = false;
 }
 

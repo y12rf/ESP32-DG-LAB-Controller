@@ -32,8 +32,12 @@ enum class RequestDisposition : uint8_t { Rejected, Queued, Prepared };
 
 struct PreparedStrengthCommand {
   uint8_t sequenceMethod;
+  // strengthA/B are the values written to the B0 wire fields. Relative
+  // commands use their raw magnitude; absolute commands use the target.
   uint8_t strengthA;
   uint8_t strengthB;
+  uint8_t targetStrengthA;
+  uint8_t targetStrengthB;
   bool valid;
 };
 
@@ -45,13 +49,14 @@ class StrengthController {
   bool prepareCommand(uint32_t now, PreparedStrengthCommand& out);
   void commitPrepared(const PreparedStrengthCommand& command, uint32_t now);
   void rollbackPrepared(const PreparedStrengthCommand& command);
-  void onStrengthResponse(uint8_t sequence, uint8_t currentA, uint8_t currentB,
+  bool onStrengthResponse(uint8_t sequence, uint8_t currentA, uint8_t currentB,
                           uint32_t now);
-  void tick(uint32_t now);
+  bool tick(uint32_t now);
   void resetConnection();
   uint8_t strengthA() const { return strengthA_; }
   uint8_t strengthB() const { return strengthB_; }
   bool waitingForResponse() const { return waiting_; }
+  bool feedbackSynchronized() const { return feedbackSynchronized_; }
 
  private:
   struct Intent {
@@ -66,9 +71,12 @@ class StrengthController {
   uint8_t sequence_;
   uint8_t inFlightSequence_;
   bool waiting_;
+  bool feedbackSynchronized_;
   uint32_t sentAt_;
   Intent preparedA_;
   Intent preparedB_;
+  Intent preparedRemainderA_;
+  Intent preparedRemainderB_;
   bool hasPrepared_;
 
   static int clamp(int value);
