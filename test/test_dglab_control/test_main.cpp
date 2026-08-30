@@ -3,6 +3,8 @@
 
 using namespace dglab;
 
+static void synchronize_at_100(StrengthController& controller);
+
 void test_b0_layout_is_exactly_twenty_bytes() {
   const WaveBlock wave = {{10, 11, 12, 13, 1, 2, 3, 4}};
   B0Frame frame = {};
@@ -24,6 +26,77 @@ void test_disabled_wave_is_safe_marker() {
 void test_wave_schedule_handles_rollover() {
   TEST_ASSERT_FALSE(isWaveSendDue(0xFFFFFFC0u, 0xFFFFFFC0u));
   TEST_ASSERT_TRUE(isWaveSendDue(50u, 0xFFFFFFC0u));
+}
+
+void test_b0_cycle_waits_until_100ms_without_consuming_pending_strength() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  const WaveBlock wave = {{1, 2, 3, 4, 5, 6, 7, 8}};
+  PreparedStrengthCommand command = {};
+  B0Frame frame = {};
+
+  TEST_ASSERT_FALSE(
+      prepareB0Cycle(99, 0, controller, wave, command, frame));
+  TEST_ASSERT_TRUE(
+      prepareB0Cycle(100, 0, controller, wave, command, frame));
+  TEST_ASSERT_TRUE(command.valid);
+  TEST_ASSERT_EQUAL_UINT8(5, frame.bytes[2]);
+}
+
+void test_b0_cycle_puts_pending_strength_and_both_waves_in_one_frame() {
+  StrengthController controller;
+  synchronize_at_100(controller);
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 2);
+  const WaveBlock wave = {{11, 22, 33, 44, 55, 66, 77, 88}};
+  PreparedStrengthCommand command = {};
+  B0Frame frame = {};
+
+  TEST_ASSERT_TRUE(
+      prepareB0Cycle(100, 0, controller, wave, command, frame));
+  TEST_ASSERT_TRUE(command.valid);
+  TEST_ASSERT_EQUAL_HEX8(0x24, frame.bytes[1]);
+  TEST_ASSERT_EQUAL_UINT8(5, frame.bytes[2]);
+  TEST_ASSERT_EQUAL_UINT8(0, frame.bytes[3]);
+  TEST_ASSERT_EQUAL_UINT8(105, command.targetStrengthA);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wave.bytes, frame.bytes + 4, kWaveBlockSize);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wave.bytes, frame.bytes + 12, kWaveBlockSize);
+}
+
+void test_b0_cycle_sends_wave_only_while_strength_command_waits_for_b1() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  const WaveBlock wave = {{9, 8, 7, 6, 5, 4, 3, 2}};
+  PreparedStrengthCommand command = {};
+  B0Frame frame = {};
+
+  TEST_ASSERT_TRUE(
+      prepareB0Cycle(100, 0, controller, wave, command, frame));
+  controller.commitPrepared(command, 100);
+
+  command = {};
+  frame = {};
+  TEST_ASSERT_TRUE(
+      prepareB0Cycle(200, 100, controller, wave, command, frame));
+  TEST_ASSERT_FALSE(command.valid);
+  TEST_ASSERT_EQUAL_HEX8(0, frame.bytes[1]);
+  TEST_ASSERT_EQUAL_UINT8(0, frame.bytes[2]);
+  TEST_ASSERT_EQUAL_UINT8(0, frame.bytes[3]);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wave.bytes, frame.bytes + 4, kWaveBlockSize);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wave.bytes, frame.bytes + 12, kWaveBlockSize);
+}
+
+void test_b0_cycle_disables_both_wave_channels_with_disabled_wave() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  PreparedStrengthCommand command = {};
+  B0Frame frame = {};
+
+  TEST_ASSERT_TRUE(
+      prepareB0Cycle(100, 0, controller, kDisabledWave, command, frame));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kDisabledWave.bytes, frame.bytes + 4,
+                                kWaveBlockSize);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kDisabledWave.bytes, frame.bytes + 12,
+                                kWaveBlockSize);
 }
 
 void test_relative_strength_keeps_raw_delta() {
@@ -365,6 +438,10 @@ int main(int, char**) {
   RUN_TEST(test_b0_layout_is_exactly_twenty_bytes);
   RUN_TEST(test_disabled_wave_is_safe_marker);
   RUN_TEST(test_wave_schedule_handles_rollover);
+  RUN_TEST(test_b0_cycle_waits_until_100ms_without_consuming_pending_strength);
+  RUN_TEST(test_b0_cycle_puts_pending_strength_and_both_waves_in_one_frame);
+  RUN_TEST(test_b0_cycle_sends_wave_only_while_strength_command_waits_for_b1);
+  RUN_TEST(test_b0_cycle_disables_both_wave_channels_with_disabled_wave);
   RUN_TEST(test_relative_strength_keeps_raw_delta);
   RUN_TEST(test_relative_increase_encodes_magnitude_and_predicts_target_for_a);
   RUN_TEST(test_relative_decrease_encodes_magnitude_and_predicts_target_for_a);
