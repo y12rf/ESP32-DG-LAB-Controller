@@ -8,6 +8,19 @@
 #include <BLEAdvertisedDevice.h>
 #include <stdint.h>
 #include <vector>
+#include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <DgLabControl.h>
+
+using dglab::B0Frame;
+using dglab::Channel;
+using dglab::DeviceIdentity;
+using dglab::PreparedStrengthCommand;
+using dglab::ResumePolicy;
+using dglab::StrengthController;
+using dglab::StrengthOperation;
+using dglab::WaveBlock;
 
 //WiFi 配置
 const char* ssid = "ESP32-Controller";
@@ -66,7 +79,7 @@ BLERemoteCharacteristic* pCharacteristicB_2_0 = nullptr;
 BLERemoteCharacteristic* pCharacteristic_3_0_Write = nullptr;
 BLERemoteCharacteristic* pCharacteristic_3_0_Notify = nullptr;
 
-bool deviceConnected = false;
+std::atomic<bool> deviceConnected(false);
 String connectedDeviceName = "";
 String connectedDeviceAddress = "";
 bool autoConnectEnabled = true;
@@ -81,8 +94,19 @@ bool autoScanSuppressedLogged = false;
 int strengthA = 0;                // A通道强度 (2.0: 0-2047, 3.0: 0-200)
 int strengthB = 0;                // B通道强度
 uint8_t orderNo = 0;              // 序列号 (0-15), 用于3.0设备
-bool isInputAllowed = true;       // 是否允许输入新的强度调整
-bool waitingForResponse = false;  // 是否正在等待 B1 回应
+bool isInputAllowed = true;       // 兼容旧 UI 状态显示
+bool waitingForResponse = false;  // 兼容旧 UI 状态显示
+bool strengthConfirmed = false;
+StrengthController strengthController;
+ResumePolicy resumePolicy;
+std::atomic<bool> linkReady(false);
+std::atomic<bool> bleLinkAlive(false);
+bool desiredSending = false;
+bool manualDisconnectRequested = false;
+bool clientCleanupPending = false;
+DeviceIdentity connectedIdentity = {{0, 0, 0, 0, 0, 0}, 0};
+bool connectedIdentityValid = false;
+DeviceType resumeDeviceType = DeviceType::None;
 
 //波形数据
 const char* wave_2_0_A[] = {
@@ -133,7 +157,6 @@ bool isSending = false;
 int waveIndex = 0;
 char selectedWave = 'a';
 unsigned long lastSendTime = 0;
-const int sendInterval = 200;  // ms
 
 //logs
 const int MAX_LOGS = 10;
@@ -152,13 +175,39 @@ struct ScannedDevice {
   String address;
   DeviceType type;
   int rssi;
+  DeviceIdentity identity;
 };
 std::vector<ScannedDevice> scannedDevices;
 
-bool connectToDevice(const String& address, DeviceType type);
+enum class BleEventType : uint8_t { StrengthResponse, Disconnected };
+struct BleEvent {
+  BleEventType type;
+  uint8_t sequence;
+  uint8_t strengthA;
+  uint8_t strengthB;
+};
+QueueHandle_t bleEventQueue = nullptr;
+std::atomic<uint32_t> droppedBleEvents(0);
+
+void enqueueBleEvent(const BleEvent& event) {
+  if (!bleEventQueue || xQueueSend(bleEventQueue, &event, 0) != pdPASS) {
+    droppedBleEvents.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+DeviceIdentity makeIdentity(BLEAddress address, uint8_t addressType) {
+  DeviceIdentity identity = {{0, 0, 0, 0, 0, 0}, addressType};
+  uint8_t* native = address.getNative();
+  if (native) std::copy(native, native + 6, identity.address);
+  return identity;
+}
+
+bool connectToDevice(const String& address, DeviceType type,
+                     const DeviceIdentity* identity = nullptr,
+                     bool manualSelection = false);
 
 bool autoConnectNearestDevice() {
-  if (deviceConnected) {
+  if (deviceConnected || clientCleanupPending) {
     addLog("已连接设备，跳过自动连接");
     return false;
   }
@@ -167,13 +216,24 @@ bool autoConnectNearestDevice() {
     return false;
   }
 
-  const ScannedDevice* best = &scannedDevices[0];
-  for (auto& d : scannedDevices) {
-    if (d.rssi > best->rssi) best = &d;
+  const ScannedDevice* best = nullptr;
+  if (desiredSending && connectedIdentityValid) {
+    for (auto& d : scannedDevices) {
+      if (d.type == resumeDeviceType && dglab::sameIdentity(d.identity, connectedIdentity)) {
+        best = &d;
+        break;
+      }
+    }
+    if (!best) return false;
+  } else {
+    best = &scannedDevices[0];
+    for (auto& d : scannedDevices) {
+      if (d.rssi > best->rssi) best = &d;
+    }
   }
 
   addLog("自动连接距离最近的设备: " + best->name + " RSSI=" + String(best->rssi));
-  if (!connectToDevice(best->address, best->type)) {
+  if (!connectToDevice(best->address, best->type, &best->identity, false)) {
     addLog("自动连接失败");
     return false;
   }
@@ -191,6 +251,8 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     if (name.startsWith(devicePrefix_2_0) || name.startsWith(devicePrefix_3_0)) {
       DeviceType type = name.startsWith(devicePrefix_2_0) ? DeviceType::DG2 : DeviceType::DG3;
       int rssi = advertisedDevice.getRSSI();
+      DeviceIdentity identity = makeIdentity(advertisedDevice.getAddress(),
+                                             static_cast<uint8_t>(advertisedDevice.getAddressType()));
       bool exist = false;
       for (auto& d : scannedDevices)
         if (d.address == address) {
@@ -198,8 +260,7 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
           break;
         }
       if (!exist) {
-        scannedDevices.push_back({ name, address, type, rssi });
-        addLog("发现设备: " + name + " RSSI=" + String(rssi));
+        scannedDevices.push_back({ name, address, type, rssi, identity });
       }
     }
   }
@@ -210,11 +271,11 @@ static MyAdvertisedDeviceCallbacks scanCallbacks;
 // ---------- BLE 连接 / 断开回调 ----------
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient*) override {
-    addLog("设备连接成功");
+    bleLinkAlive.store(true, std::memory_order_release);
   }
   void onDisconnect(BLEClient*) override {
-    deviceConnected = false;
-    addLog("设备连接断开");
+    bleLinkAlive.store(false, std::memory_order_release);
+    enqueueBleEvent({BleEventType::Disconnected, 0, 0, 0});
   }
 };
 
@@ -224,18 +285,28 @@ static MyClientCallback clientCallbacks;
 void notifyCallback(BLERemoteCharacteristic*, uint8_t* pData, size_t length, bool isNotify) {
   if (!isNotify || length < 4) return;
   if (pData[0] != 0xB1) return;  // 只处理 B1 回应
+  enqueueBleEvent({BleEventType::StrengthResponse, pData[1], pData[2], pData[3]});
+}
 
-  uint8_t responseOrderNo = pData[1];
-  uint8_t currentStrengthA = pData[2];
-  uint8_t currentStrengthB = pData[3];
-  strengthA = currentStrengthA;
-  strengthB = currentStrengthB;
-
-  addLog("收到强度回应: 序列号=" + String(responseOrderNo) + ", A=" + String(strengthA) + ", B=" + String(strengthB));
-
-  if (responseOrderNo == orderNo && waitingForResponse) {
-    isInputAllowed = true;
-    waitingForResponse = false;
+void processBleEvents() {
+  if (!bleEventQueue) return;
+  BleEvent event;
+  while (xQueueReceive(bleEventQueue, &event, 0) == pdPASS) {
+    if (event.type == BleEventType::StrengthResponse) {
+      strengthController.onStrengthResponse(event.sequence, event.strengthA,
+                                            event.strengthB, millis());
+      strengthA = strengthController.strengthA();
+      strengthB = strengthController.strengthB();
+      strengthConfirmed = true;
+      waitingForResponse = strengthController.waitingForResponse();
+      isInputAllowed = !waitingForResponse;
+      addLog("收到强度回应: 序列号=" + String(event.sequence) + ", A=" + String(strengthA) + ", B=" + String(strengthB));
+    } else if (event.type == BleEventType::Disconnected) {
+      addLog("设备连接断开");
+      deviceConnected.store(false, std::memory_order_release);
+      linkReady.store(false, std::memory_order_release);
+      clientCleanupPending = true;
+    }
   }
 }
 
@@ -410,13 +481,14 @@ bool sendData(const String& hexData, const String& hexDataB) {
 
 /* ========== 强度设置包装 ========== */
 bool setStrength(int channelA, int channelB, uint8_t method) {
-  if (!deviceConnected || deviceType != DeviceType::DG3) {
-    addLog("设备未连接或非3.0设备");
-    return false;
+  if (!deviceConnected || deviceType != DeviceType::DG3) return false;
+  if (method == 0x0C) {
+    strengthController.requestStrength(Channel::A, StrengthOperation::Absolute, channelA, millis());
   }
-  channelA = constrain(channelA, 0, 200);
-  channelB = constrain(channelB, 0, 200);
-  return sendData_3_0(getCurrentWave(), true, channelA, channelB, method);
+  if (method == 0x03) {
+    strengthController.requestStrength(Channel::B, StrengthOperation::Absolute, channelB, millis());
+  }
+  return true;
 }
 
 /* ========== A/B 通道相对/绝对调整 ========== */
@@ -424,11 +496,12 @@ bool adjustStrengthA(int value, uint8_t method) {
   if (!deviceConnected) return false;
 
   if (deviceType == DeviceType::DG3) {  // 3.0
-    int newA = strengthA;
-    if (method == 0x04) newA = min(200, strengthA + value);
-    else if (method == 0x08) newA = max(0, strengthA - value);
-    else if (method == 0x0C) newA = constrain(value, 0, 200);
-    return setStrength(newA, strengthB, method);
+    StrengthOperation op;
+    if (method == 0x04) op = StrengthOperation::Increase;
+    else if (method == 0x08) op = StrengthOperation::Decrease;
+    else if (method == 0x0C) op = StrengthOperation::Absolute;
+    else return false;
+    return strengthController.requestStrength(Channel::A, op, value, millis()) != dglab::RequestDisposition::Rejected;
   } else {  // 2.0
     int newA = strengthA;
     if (method == 0x04) newA = min(2047, strengthA + value * 7);
@@ -442,11 +515,12 @@ bool adjustStrengthB(int value, uint8_t method) {
   if (!deviceConnected) return false;
 
   if (deviceType == DeviceType::DG3) {  // 3.0
-    int newB = strengthB;
-    if (method == 0x01) newB = min(200, strengthB + value);
-    else if (method == 0x02) newB = max(0, strengthB - value);
-    else if (method == 0x03) newB = constrain(value, 0, 200);
-    return setStrength(strengthA, newB, method);
+    StrengthOperation op;
+    if (method == 0x01) op = StrengthOperation::Increase;
+    else if (method == 0x02) op = StrengthOperation::Decrease;
+    else if (method == 0x03) op = StrengthOperation::Absolute;
+    else return false;
+    return strengthController.requestStrength(Channel::B, op, value, millis()) != dglab::RequestDisposition::Rejected;
   } else {  // 2.0
     int newB = strengthB;
     if (method == 0x01) newB = min(2047, strengthB + value * 7);
@@ -456,12 +530,59 @@ bool adjustStrengthB(int value, uint8_t method) {
   }
 }
 
+bool writeB0Frame(const B0Frame& frame) {
+  if (!pCharacteristic_3_0_Write || !deviceConnected || deviceType != DeviceType::DG3) return false;
+  if (!pCharacteristic_3_0_Write->canWrite() && !pCharacteristic_3_0_Write->canWriteNoResponse()) return false;
+#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
+  return pCharacteristic_3_0_Write->writeValue(frame.bytes, sizeof(frame.bytes), true);
+#else
+  pCharacteristic_3_0_Write->writeValue(const_cast<uint8_t*>(frame.bytes), sizeof(frame.bytes), true);
+  return true;
+#endif
+}
+
+WaveBlock currentWaveBlock() {
+  WaveBlock block = {{10, 10, 10, 10, 0, 0, 0, 101}};
+  const char* current = getCurrentWave();
+  std::vector<uint8_t> bytes = hexToBytes(String(current));
+  if (bytes.size() >= 8) std::copy(bytes.begin(), bytes.begin() + 8, block.bytes);
+  return block;
+}
+
+void drainStrengthCommand() {
+  if (!deviceConnected || deviceType != DeviceType::DG3) return;
+  strengthController.tick(millis());
+  PreparedStrengthCommand command = {};
+  uint32_t now = millis();
+  if (!strengthController.prepareCommand(now, command)) {
+    waitingForResponse = strengthController.waitingForResponse();
+    isInputAllowed = !waitingForResponse;
+    return;
+  }
+  const WaveBlock wave = isSending ? currentWaveBlock() : dglab::kDisabledWave;
+  B0Frame frame = {};
+  dglab::encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
+                  wave, wave, frame);
+  if (writeB0Frame(frame)) {
+    strengthController.commitPrepared(command, now);
+    strengthA = strengthController.strengthA();
+    strengthB = strengthController.strengthB();
+    orderNo = static_cast<uint8_t>(command.sequenceMethod >> 4);
+    waitingForResponse = true;
+    isInputAllowed = false;
+    addLog("已发送强度指令");
+  } else {
+    strengthController.rollbackPrepared(command);
+    addLog("强度指令写入失败");
+  }
+}
+
 /* ========== 波形发送循环 ========== */
 void handleWaveSend() {
-  if (!isSending || !deviceConnected) return;
+  if (!deviceConnected || !linkReady.load(std::memory_order_acquire)) return;
 
   unsigned long now = millis();
-  if (now - lastSendTime >= sendInterval) {
+  if (isSending && dglab::isWaveSendDue(now, lastSendTime)) {
     lastSendTime = now;
 
     const char* data = getCurrentWave();
@@ -470,8 +591,10 @@ void handleWaveSend() {
     if (deviceType == DeviceType::DG2) {  // ---- V2 ----
       success = sendData_2_0(data, data);
     } else {                                  // ---- V3 ----
-      String combined = String(data) + data;  // 复制一次
-      success = sendData_3_0(combined, false);
+      const WaveBlock wave = currentWaveBlock();
+      B0Frame frame = {};
+      dglab::encodeB0(2, 0, static_cast<uint8_t>(strengthA), static_cast<uint8_t>(strengthB), wave, wave, frame);
+      success = writeB0Frame(frame);
     }
 
     if (!success) {
@@ -481,37 +604,63 @@ void handleWaveSend() {
       addLog("波形发送 index=" + String(waveIndex));
     }
     ++waveIndex;
+  } else if (!isSending && deviceType == DeviceType::DG3 && dglab::isWaveSendDue(now, lastSendTime)) {
+    lastSendTime = now;
+    B0Frame frame = {};
+    dglab::encodeB0(2, 0, static_cast<uint8_t>(strengthA), static_cast<uint8_t>(strengthB),
+                    dglab::kDisabledWave, dglab::kDisabledWave, frame);
+    if (!writeB0Frame(frame)) linkReady.store(false, std::memory_order_release);
   }
 }
 
 /* ========== 断开 / 连接 ========== */
 void disconnectDevice() {
   if (deviceConnected && pClient) {
+    manualDisconnectRequested = true;
+    desiredSending = false;
+    resumePolicy.setDesiredSending(false);
     isSending = false;
     pClient->disconnect();
-    deviceConnected = false;
-    deviceType = DeviceType::None;
-    connectedDeviceName = "";
-    connectedDeviceAddress = "";
-    pCharacteristicA_2_0 = nullptr;
-    pCharacteristicB_2_0 = nullptr;
-    pCharacteristic_3_0_Write = nullptr;
-    pCharacteristic_3_0_Notify = nullptr;
-    strengthA = 0;
-    strengthB = 0;
-    orderNo = 0;
-    isInputAllowed = true;
-    waitingForResponse = false;
     addLog("已断开连接");
   }
 }
 
-bool connectToDevice(const String& address, DeviceType type) {
+void handleDisconnectedClient() {
+  if (!clientCleanupPending) return;
+  clientCleanupPending = false;
+  deviceConnected.store(false, std::memory_order_release);
+  linkReady.store(false, std::memory_order_release);
+  if (pClient) {
+    delete pClient;
+    pClient = nullptr;
+  }
+  pCharacteristicA_2_0 = nullptr;
+  pCharacteristicB_2_0 = nullptr;
+  pCharacteristic_3_0_Write = nullptr;
+  pCharacteristic_3_0_Notify = nullptr;
+  deviceType = DeviceType::None;
+  if (manualDisconnectRequested) {
+    manualDisconnectRequested = false;
+    connectedIdentityValid = false;
+    resumePolicy.clearIdentity();
+    desiredSending = false;
+  } else {
+    isSending = desiredSending;
+  }
+  strengthController.resetConnection();
+  strengthA = strengthB = 0;
+  strengthConfirmed = false;
+  waitingForResponse = false;
+  isInputAllowed = true;
+}
+
+bool connectToDevice(const String& address, DeviceType type,
+                     const DeviceIdentity* identity, bool manualSelection) {
   if (type == DeviceType::None) {
     addLog("未知设备类型");
     return false;
   }
-  if (deviceConnected) disconnectDevice();
+  if (deviceConnected || clientCleanupPending) return false;
   BLEDevice::getScan()->stop();  // 避免连接时仍在扫描
 
   addLog("连接: " + address);
@@ -520,8 +669,11 @@ bool connectToDevice(const String& address, DeviceType type) {
   pClient = BLEDevice::createClient();
   pClient->setClientCallbacks(&clientCallbacks);
 
-  if (!pClient->connect(bleAddress, BLE_ADDR_TYPE_RANDOM)) {
+  const uint8_t addressType = identity ? identity->addressType : 1;
+  if (!pClient->connect(bleAddress, static_cast<esp_ble_addr_type_t>(addressType))) {
     addLog("连接失败");
+    delete pClient;
+    pClient = nullptr;
     deviceType = DeviceType::None;
     return false;
   }
@@ -574,7 +726,9 @@ bool connectToDevice(const String& address, DeviceType type) {
     if (service) {
       pCharacteristic_3_0_Write = service->getCharacteristic(BLEUUID(CHARACTERISTIC_WRITE_3_0));
       pCharacteristic_3_0_Notify = service->getCharacteristic(BLEUUID(CHARACTERISTIC_NOTIFY_3_0));
-      ok = (pCharacteristic_3_0_Write && pCharacteristic_3_0_Notify);
+      ok = (pCharacteristic_3_0_Write && pCharacteristic_3_0_Notify &&
+            (pCharacteristic_3_0_Write->canWrite() || pCharacteristic_3_0_Write->canWriteNoResponse()) &&
+            pCharacteristic_3_0_Notify->canNotify());
 
       if (ok && pCharacteristic_3_0_Notify->canNotify()) {
         pCharacteristic_3_0_Notify->registerForNotify(notifyCallback);
@@ -598,17 +752,37 @@ bool connectToDevice(const String& address, DeviceType type) {
   if (!ok) {
     addLog("服务/特性获取失败");
     pClient->disconnect();
+    clientCleanupPending = true;
     deviceType = DeviceType::None;
     return false;
   }
 
   deviceType = type;
-  deviceConnected = true;
+  resumeDeviceType = type;
+  deviceConnected.store(true, std::memory_order_release);
+  linkReady.store(true, std::memory_order_release);
+  bleLinkAlive.store(true, std::memory_order_release);
   for (auto& d : scannedDevices)
     if (d.address == address) connectedDeviceName = d.name;
   connectedDeviceAddress = address;
   if (connectedDeviceName.length() == 0) connectedDeviceName = address;
   if (type == DeviceType::DG3) { strengthA = strengthB = 0; }
+  strengthConfirmed = (type == DeviceType::DG2);
+  if (identity) {
+    connectedIdentity = *identity;
+    connectedIdentityValid = true;
+    resumePolicy.remember(connectedIdentity);
+  }
+  if (manualSelection) {
+    desiredSending = false;
+    resumePolicy.setDesiredSending(false);
+    isSending = false;
+  } else {
+    isSending = resumePolicy.shouldRestore(connectedIdentity);
+  }
+  desiredSending = isSending;
+  resumePolicy.setDesiredSending(desiredSending);
+  if (type == DeviceType::DG3) strengthController.resetConnection();
   orderNo = 0;
   isInputAllowed = true;
   waitingForResponse = false;
@@ -693,8 +867,8 @@ String makeHTML() {
   if (deviceConnected) {
     html += "<p>已连接: " + connectedDeviceName + " (" + String(deviceTypeLabel(deviceType)) + ")</p>";
     if (deviceType == DeviceType::DG3) {
-      html += "<p>通道A强度: " + String(strengthA) + "/200</p>";
-      html += "<p>通道B强度: " + String(strengthB) + "/200</p>";
+      html += "<p>通道A强度: " + String(strengthA) + "/200" + (strengthConfirmed ? "" : "（未确认）") + "</p>";
+      html += "<p>通道B强度: " + String(strengthB) + "/200" + (strengthConfirmed ? "" : "（未确认）") + "</p>";
     } else {
       html += "<p>通道A强度: " + String(strengthA / 7) + " (原:" + String(strengthA) + ")</p>";
       html += "<p>通道B强度: " + String(strengthB / 7) + " (原:" + String(strengthB) + ")</p>";
@@ -720,6 +894,7 @@ String makeHTML() {
       s += (ch == 'a' ? 'A' : 'B');
       s += "</h3><div class='strength-display'>";
       s += String(deviceType == DeviceType::DG2 ? strength / 7 : strength);
+      if (deviceType == DeviceType::DG3 && !strengthConfirmed) s += "（未确认）";
       s += "</div><div>";
       bool isA = (ch == 'a');
       s += "<a class='btn btn-primary ctrl-btn' href='/strength?channel=";
@@ -866,8 +1041,15 @@ void setupWeb() {
       DeviceType type = parseDeviceType(server.arg("type").toInt());
       if (type == DeviceType::None) {
         addLog("连接失败: 未知设备类型");
-      } else if (!connectToDevice(server.arg("address"), type)) {
+      } else {
+        const String address = server.arg("address");
+        const ScannedDevice* selected = nullptr;
+        for (auto& d : scannedDevices) {
+          if (d.address == address && d.type == type) { selected = &d; break; }
+        }
+        if (!selected || !connectToDevice(address, type, &selected->identity, true)) {
         addLog("连接失败: 类型无效或连接错误");
+        }
       }
     }
     server.sendHeader("Location", "/");
@@ -885,6 +1067,8 @@ void setupWeb() {
   server.on("/start", HTTP_GET, []() {
     if (deviceConnected) {
       isSending = true;
+      desiredSending = true;
+      resumePolicy.setDesiredSending(true);
       waveIndex = 0;
       addLog("开始发送");
     }
@@ -894,6 +1078,8 @@ void setupWeb() {
 
   server.on("/stop", HTTP_GET, []() {
     isSending = false;
+    desiredSending = false;
+    resumePolicy.setDesiredSending(false);
     addLog("停止发送");
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
@@ -914,14 +1100,26 @@ void setupWeb() {
     if (deviceConnected && server.hasArg("channel") && server.hasArg("value") && server.hasArg("method")) {
 
       char ch = server.arg("channel").charAt(0);
-      int val = server.arg("value").toInt();
-      uint8_t m = (uint8_t)server.arg("method").toInt();
+      const String rawValue = server.arg("value");
+      const int val = rawValue.toInt();
+      const int methodValue = server.arg("method").toInt();
+      if ((ch != 'a' && ch != 'b') || rawValue.startsWith("-") || val < 0 ||
+          (deviceType == DeviceType::DG3 &&
+           (methodValue == 4 || methodValue == 8 || methodValue == 1 || methodValue == 2) && val > 200)) {
+        addLog("强度参数无效");
+        server.sendHeader("Location", "/");
+        server.send(302, "text/plain", "");
+        return;
+      }
+      uint8_t m = static_cast<uint8_t>(methodValue);
 
       bool ok = (ch == 'a') ? adjustStrengthA(val, m)
                             : adjustStrengthB(val, m);
 
       if (ok)
         addLog(String("调整") + (ch == 'a' ? "A" : "B") + "强度: " + String(val) + ", 方法:" + String(m));
+      else
+        addLog("强度请求未发送");
     }
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
@@ -941,6 +1139,7 @@ void setup() {
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
   BLEDevice::init("ESP32_DGLAB_Client");
+  bleEventQueue = xQueueCreate(16, sizeof(BleEvent));
   setupWeb();
   addLog("系统初始化完成");
   lastScanFinished = millis();
@@ -948,6 +1147,9 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  processBleEvents();
+  handleDisconnectedClient();
+  drainStrengthCommand();
   handleWaveSend();
   handleAutoScan();
   delay(10);

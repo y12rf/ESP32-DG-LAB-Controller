@@ -110,6 +110,7 @@ struct PreparedStrengthCommand {
 - `rollbackPrepared()` keeps the prepared intent pending after a failed BLE write.
 - `onStrengthResponse(uint8_t sequence, uint8_t strengthA, uint8_t strengthB)` updates confirmed state and returns whether it resolved the in-flight command.
 - `tick(uint32_t nowMs)` returns whether it expired an in-flight command after 500 ms, without requeuing or retrying that command.
+- `resetConnection()` clears prepared, in-flight, and pending intents and marks strength feedback unsynchronized after a disconnect.
 - `isWaveSendDue(uint32_t nowMs, uint32_t lastSendMs)` applies the rollover-safe 100 ms scheduling rule.
 - `ResumePolicy` stores one `DeviceIdentity`, decides whether a scan result is the resume target, and returns whether a completed connection may restore `desiredSending`.
 
@@ -184,8 +185,10 @@ Only one `BLEClient` may exist at a time:
 - For an established connection, request disconnect and defer deletion until its disconnect event has returned to the Arduino loop.
 - Do not create another client while cleanup is pending.
 - Set all characteristic pointers to null before deleting the owning client.
-- Treat missing services, missing write capability, missing notify capability, and failed notify registration as connection failures using the same deferred cleanup path.
+- Treat missing services, missing write capability, and missing notify capability as connection failures using the same deferred cleanup path.
 - Register notifications and write BF configuration after every successful connection or reconnect.
+
+ESP32 BLE Arduino 2.0.0 exposes `registerForNotify()` as a `void` API, so registration success cannot be checked synchronously. Notification health is therefore observed through B1 delivery and the 500 ms feedback timeout rather than an unavailable return value.
 
 ## BLE Callback Concurrency
 
