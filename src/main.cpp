@@ -197,8 +197,8 @@ void enqueueBleEvent(const BleEvent& event) {
 
 DeviceIdentity makeIdentity(BLEAddress address, uint8_t addressType) {
   DeviceIdentity identity = {{0, 0, 0, 0, 0, 0}, addressType};
-  uint8_t* native = address.getNative();
-  if (native) std::copy(native, native + 6, identity.address);
+  esp_bd_addr_t* native = address.getNative();
+  if (native) std::copy(*native, *native + 6, identity.address);
   return identity;
 }
 

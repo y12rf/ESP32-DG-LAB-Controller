@@ -42,4 +42,4 @@ jobs:
         run: pio test -e native
 
       - name: Build firmware
-        run: pio run
+        run: pio run -e esp32dev
