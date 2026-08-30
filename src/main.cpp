@@ -4,20 +4,11 @@
 #include <WebServer.h>
 #include <BLEDevice.h>
 #include <stdint.h>
-#include <vector>
-#include <DgLabControl.h>
 #include "AppState.h"
 #include "AppLog.h"
 #include "BleManager.h"
+#include "OutputController.h"
 #include "Waveforms.h"
-
-using dglab::B0Frame;
-using dglab::Channel;
-using dglab::PreparedStrengthCommand;
-using dglab::ResumePolicy;
-using dglab::StrengthController;
-using dglab::StrengthOperation;
-using dglab::WaveBlock;
 
 //WiFi 配置
 const char* ssid = "ESP32-Controller";
@@ -27,242 +18,17 @@ WebServer server(80);
 AppState appState;
 AppLog appLog;
 BleManager bleManager(appState, appLog);
-
-StrengthController strengthController;
-ResumePolicy resumePolicy;
-//通道强度控制
+OutputController outputController(appState, appLog, bleManager);
 
 void processBleEvents() {
-  BleEvent event;
+  BleEvent event{};
   while (bleManager.pollEvent(event)) {
     if (event.type == BleEventType::StrengthResponse) {
-      strengthController.onStrengthResponse(event.sequence, event.strengthA,
-                                            event.strengthB, millis());
-      appState.strengthA = strengthController.strengthA();
-      appState.strengthB = strengthController.strengthB();
-      appState.strengthConfirmed = true;
-      appState.waitingForResponse = strengthController.waitingForResponse();
-      appState.isInputAllowed = !appState.waitingForResponse;
-      appLog.add("收到强度回应: 序列号=" + String(event.sequence) + ", A=" + String(appState.strengthA) + ", B=" + String(appState.strengthB));
-    } else if (event.type == BleEventType::Disconnected) {
+      outputController.onStrengthResponse(event);
+    } else {
       bleManager.handleDisconnectEvent();
     }
   }
-}
-
-// ---------- HEX → bytes ----------
-std::vector<uint8_t> hexToBytes(const String& hex) {
-  std::vector<uint8_t> v;
-  if (hex.length() % 2 != 0) {
-    appLog.add("hexToBytes: 无效长度 " + hex);
-    return v;
-  }
-
-  for (size_t i = 0; i < hex.length(); i += 2) {
-    String part = hex.substring(i, i + 2);
-    char* endPtr = nullptr;
-    long value = strtol(part.c_str(), &endPtr, 16);
-    if (endPtr == nullptr || *endPtr != '\0' || value < 0 || value > 0xFF) {
-      appLog.add("hexToBytes: 无效数据 " + part);
-      v.clear();
-      return v;
-    }
-    v.push_back(static_cast<uint8_t>(value));
-  }
-  return v;
-}
-
-/* ========== 2.0 设备数据发送 ========== */
-bool sendData_2_0(const String& hexA, const String& hexB) {
-  if (!appState.deviceConnected || appState.deviceType != DeviceType::DG2) return false;
-
-  std::vector<uint8_t> bytesA = hexToBytes(hexA);
-  if (hexA.length() > 0 && bytesA.empty()) return false;
-  std::vector<uint8_t> bytesB = hexToBytes(hexB);
-  if (hexB.length() > 0 && bytesB.empty()) return false;
-  return bleManager.writeV2WaveBytes(bytesA, bytesB);
-}
-
-/* ========== 2.0 设备强度设置 ========== */
-bool setStrength_2_0(int channelA, int channelB) {
-  if (!appState.deviceConnected || appState.deviceType != DeviceType::DG2) {
-    appLog.add("设备未连接或非2.0设备");
-    return false;
-  }
-  channelA = constrain(channelA, 0, 2047);
-  channelB = constrain(channelB, 0, 2047);
-
-  uint32_t value = ((channelA & 0x7FF) << 11) | (channelB & 0x7FF);
-  uint8_t data[3] = { uint8_t(value & 0xFF),
-                      uint8_t((value >> 8) & 0xFF),
-                      uint8_t((value >> 16) & 0xFF) };
-
-  if (!bleManager.hasV2StrengthCharacteristic()) {
-    appLog.add("PWM_AB2 特性获取失败");
-    return false;
-  }
-  bool success = bleManager.writeV2StrengthBytes(data);
-
-  if (success) {
-    appState.strengthA = channelA;
-    appState.strengthB = channelB;
-    appLog.add("设置2.0强度: A=" + String(channelA) + ", B=" + String(channelB));
-  } else {
-    appLog.add("设置2.0强度失败");
-  }
-  return success;
-}
-
-/* ========== A/B 通道相对/绝对调整 ========== */
-bool adjustStrengthA(int value, uint8_t method) {
-  if (!appState.deviceConnected) return false;
-
-  if (appState.deviceType == DeviceType::DG3) {  // 3.0
-    StrengthOperation op;
-    if (method == 0x04) op = StrengthOperation::Increase;
-    else if (method == 0x08) op = StrengthOperation::Decrease;
-    else if (method == 0x0C) op = StrengthOperation::Absolute;
-    else return false;
-    return strengthController.requestStrength(Channel::A, op, value, millis()) != dglab::RequestDisposition::Rejected;
-  } else {  // 2.0
-    int newA = appState.strengthA;
-    if (method == 0x04) newA = min(2047, appState.strengthA + value * 7);
-    else if (method == 0x08) newA = max(0, appState.strengthA - value * 7);
-    else if (method == 0x0C) newA = constrain(value * 7, 0, 2047);
-    return setStrength_2_0(newA, appState.strengthB);
-  }
-}
-
-bool adjustStrengthB(int value, uint8_t method) {
-  if (!appState.deviceConnected) return false;
-
-  if (appState.deviceType == DeviceType::DG3) {  // 3.0
-    StrengthOperation op;
-    if (method == 0x01) op = StrengthOperation::Increase;
-    else if (method == 0x02) op = StrengthOperation::Decrease;
-    else if (method == 0x03) op = StrengthOperation::Absolute;
-    else return false;
-    return strengthController.requestStrength(Channel::B, op, value, millis()) != dglab::RequestDisposition::Rejected;
-  } else {  // 2.0
-    int newB = appState.strengthB;
-    if (method == 0x01) newB = min(2047, appState.strengthB + value * 7);
-    else if (method == 0x02) newB = max(0, appState.strengthB - value * 7);
-    else if (method == 0x03) newB = constrain(value * 7, 0, 2047);
-    return setStrength_2_0(appState.strengthA, newB);
-  }
-}
-
-WaveBlock currentWaveBlock() {
-  WaveBlock block = {{10, 10, 10, 10, 0, 0, 0, 101}};
-  const char* current = waveforms::current(appState.deviceType, appState.selectedWave,
-                                            appState.waveIndex);
-  std::vector<uint8_t> bytes = hexToBytes(String(current));
-  if (bytes.size() >= 8) std::copy(bytes.begin(), bytes.begin() + 8, block.bytes);
-  return block;
-}
-
-void drainStrengthCommand() {
-  if (!appState.deviceConnected || appState.deviceType != DeviceType::DG3) return;
-  strengthController.tick(millis());
-  PreparedStrengthCommand command = {};
-  uint32_t now = millis();
-  if (!strengthController.prepareCommand(now, command)) {
-    appState.waitingForResponse = strengthController.waitingForResponse();
-    appState.isInputAllowed = !appState.waitingForResponse;
-    return;
-  }
-  const WaveBlock wave = appState.isSending ? currentWaveBlock() : dglab::kDisabledWave;
-  B0Frame frame = {};
-  dglab::encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
-                  wave, wave, frame);
-  if (bleManager.writeV3Frame(frame)) {
-    strengthController.commitPrepared(command, now);
-    appState.strengthA = strengthController.strengthA();
-    appState.strengthB = strengthController.strengthB();
-    appState.orderNo = static_cast<uint8_t>(command.sequenceMethod >> 4);
-    appState.waitingForResponse = true;
-    appState.isInputAllowed = false;
-    appLog.add("已发送强度指令");
-  } else {
-    strengthController.rollbackPrepared(command);
-    appLog.add("强度指令写入失败");
-  }
-}
-
-/* ========== 波形发送循环 ========== */
-void handleWaveSend() {
-  if (!appState.deviceConnected || !appState.linkReady.load(std::memory_order_acquire)) return;
-
-  unsigned long now = millis();
-  if (appState.isSending && dglab::isWaveSendDue(now, appState.lastSendTime)) {
-    appState.lastSendTime = now;
-
-    const char* data = waveforms::current(appState.deviceType, appState.selectedWave,
-                                           appState.waveIndex);
-    bool success = false;
-
-    if (appState.deviceType == DeviceType::DG2) {  // ---- V2 ----
-      success = sendData_2_0(data, data);
-    } else {                                  // ---- V3 ----
-      const WaveBlock wave = currentWaveBlock();
-      B0Frame frame = {};
-      dglab::encodeB0(2, 0, static_cast<uint8_t>(appState.strengthA), static_cast<uint8_t>(appState.strengthB), wave, wave, frame);
-      success = bleManager.writeV3Frame(frame);
-    }
-
-    if (!success) {
-      appState.isSending = false;
-      appLog.add("波形发送失败");
-    } else if (appState.waveIndex % 100 == 0) {
-      appLog.add("波形发送 index=" + String(appState.waveIndex));
-    }
-    ++appState.waveIndex;
-  } else if (!appState.isSending && appState.deviceType == DeviceType::DG3 && dglab::isWaveSendDue(now, appState.lastSendTime)) {
-    appState.lastSendTime = now;
-    B0Frame frame = {};
-    dglab::encodeB0(2, 0, static_cast<uint8_t>(appState.strengthA), static_cast<uint8_t>(appState.strengthB),
-                    dglab::kDisabledWave, dglab::kDisabledWave, frame);
-    if (!bleManager.writeV3Frame(frame)) appState.linkReady.store(false, std::memory_order_release);
-  }
-}
-
-void finalizeConnectedOutput(bool manualSelection) {
-  if (appState.deviceType == DeviceType::DG3) {
-    appState.strengthA = 0;
-    appState.strengthB = 0;
-  }
-  appState.strengthConfirmed = (appState.deviceType == DeviceType::DG2);
-  if (appState.connectedIdentityValid) resumePolicy.remember(appState.connectedIdentity);
-  if (manualSelection) {
-    appState.desiredSending = false;
-    resumePolicy.setDesiredSending(false);
-    appState.isSending = false;
-  } else {
-    appState.isSending = appState.connectedIdentityValid &&
-                         resumePolicy.shouldRestore(appState.connectedIdentity);
-  }
-  appState.desiredSending = appState.isSending;
-  resumePolicy.setDesiredSending(appState.desiredSending);
-  if (appState.deviceType == DeviceType::DG3) strengthController.resetConnection();
-  appState.orderNo = 0;
-  appState.isInputAllowed = true;
-  appState.waitingForResponse = false;
-}
-
-void finalizeDisconnectedOutput(bool manualDisconnect) {
-  if (manualDisconnect) {
-    resumePolicy.clearIdentity();
-    appState.desiredSending = false;
-    resumePolicy.setDesiredSending(false);
-  } else {
-    appState.isSending = appState.desiredSending;
-  }
-  strengthController.resetConnection();
-  appState.strengthA = 0;
-  appState.strengthB = 0;
-  appState.strengthConfirmed = false;
-  appState.waitingForResponse = false;
-  appState.isInputAllowed = true;
 }
 
 /* ========== WEBUI ========== */
@@ -453,7 +219,7 @@ void setupWeb() {
 
   /* ---- 扫描设备 ---- */
   server.on("/scan", HTTP_GET, []() {
-    if (bleManager.startBleScan()) finalizeConnectedOutput(false);
+    if (bleManager.startBleScan()) outputController.onConnected(false);
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
@@ -482,7 +248,7 @@ void setupWeb() {
         if (!selected || !bleManager.connectToDevice(address, type, &selected->identity, true)) {
           appLog.add("连接失败: 类型无效或连接错误");
         } else {
-          finalizeConnectedOutput(true);
+          outputController.onConnected(true);
         }
       }
     }
@@ -499,22 +265,13 @@ void setupWeb() {
 
   /* ---- 开始 / 停止波形发送 ---- */
   server.on("/start", HTTP_GET, []() {
-    if (appState.deviceConnected) {
-      appState.isSending = true;
-      appState.desiredSending = true;
-      resumePolicy.setDesiredSending(true);
-      appState.waveIndex = 0;
-      appLog.add("开始发送");
-    }
+    outputController.startSending();
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
 
   server.on("/stop", HTTP_GET, []() {
-    appState.isSending = false;
-    appState.desiredSending = false;
-    resumePolicy.setDesiredSending(false);
-    appLog.add("停止发送");
+    outputController.stopSending();
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
@@ -522,8 +279,7 @@ void setupWeb() {
   /* ---- 切换波形 ---- */
   server.on("/wave", HTTP_GET, []() {
     if (server.hasArg("type")) {
-      appState.selectedWave = server.arg("type").charAt(0);
-      appLog.add("切换波形 " + String(appState.selectedWave));
+      outputController.selectWave(server.arg("type").charAt(0));
     }
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
@@ -547,8 +303,7 @@ void setupWeb() {
       }
       uint8_t m = static_cast<uint8_t>(methodValue);
 
-      bool ok = (ch == 'a') ? adjustStrengthA(val, m)
-                            : adjustStrengthB(val, m);
+      bool ok = outputController.adjustStrength(ch, val, m);
 
       if (ok)
         appLog.add(String("调整") + (ch == 'a' ? "A" : "B") + "强度: " + String(val) + ", 方法:" + String(m));
@@ -584,10 +339,10 @@ void loop() {
   processBleEvents();
   bool manualDisconnect = false;
   if (bleManager.handleDisconnectedClient(manualDisconnect)) {
-    finalizeDisconnectedOutput(manualDisconnect);
+    outputController.onDisconnected(manualDisconnect);
   }
-  drainStrengthCommand();
-  handleWaveSend();
-  if (bleManager.handleAutoScan()) finalizeConnectedOutput(false);
+  outputController.drainStrengthCommand();
+  outputController.handleWaveSend();
+  if (bleManager.handleAutoScan()) outputController.onConnected(false);
   delay(10);
 }
