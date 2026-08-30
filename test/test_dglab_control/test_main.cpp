@@ -149,6 +149,145 @@ void test_cancelled_relative_intents_do_not_produce_a_command() {
   TEST_ASSERT_FALSE(controller.prepareCommand(0, command));
 }
 
+void test_request_after_prepare_is_sent_after_matching_feedback() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  PreparedStrengthCommand command = {};
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 3, 0);
+  controller.commitPrepared(command, 0);
+  TEST_ASSERT_TRUE(controller.onStrengthResponse(1, 5, 0, 1));
+
+  TEST_ASSERT_TRUE(controller.prepareCommand(1, command));
+  TEST_ASSERT_EQUAL_HEX8(0x24, command.sequenceMethod);
+  TEST_ASSERT_EQUAL_UINT8(3, command.strengthA);
+  TEST_ASSERT_EQUAL_UINT8(8, command.targetStrengthA);
+}
+
+void test_request_after_prepare_is_merged_once_on_rollback() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  PreparedStrengthCommand command = {};
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 3, 0);
+  controller.rollbackPrepared(command);
+
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+  TEST_ASSERT_EQUAL_HEX8(0x14, command.sequenceMethod);
+  TEST_ASSERT_EQUAL_UINT8(8, command.strengthA);
+  TEST_ASSERT_EQUAL_UINT8(8, command.targetStrengthA);
+}
+
+void test_relative_intent_over_200_is_chunked_and_resumes_after_feedback() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 201, 0);
+  PreparedStrengthCommand command = {};
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+  TEST_ASSERT_EQUAL_UINT8(200, command.strengthA);
+  TEST_ASSERT_EQUAL_UINT8(200, command.targetStrengthA);
+  controller.commitPrepared(command, 0);
+  TEST_ASSERT_TRUE(controller.onStrengthResponse(1, 200, 0, 1));
+
+  TEST_ASSERT_TRUE(controller.prepareCommand(1, command));
+  TEST_ASSERT_EQUAL_HEX8(0x24, command.sequenceMethod);
+  TEST_ASSERT_EQUAL_UINT8(1, command.strengthA);
+  TEST_ASSERT_EQUAL_UINT8(200, command.targetStrengthA);
+}
+
+void test_timed_out_relative_command_has_no_retry_or_pending_intent() {
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  PreparedStrengthCommand command = {};
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+  controller.commitPrepared(command, 0);
+  TEST_ASSERT_TRUE(controller.tick(500));
+  TEST_ASSERT_FALSE(controller.prepareCommand(500, command));
+}
+
+void test_late_feedback_for_timed_out_command_does_not_release_new_command() {
+  StrengthController controller;
+  PreparedStrengthCommand command = {};
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+  controller.commitPrepared(command, 0);
+  TEST_ASSERT_TRUE(controller.tick(500));
+
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 3, 500);
+  TEST_ASSERT_TRUE(controller.prepareCommand(500, command));
+  TEST_ASSERT_EQUAL_HEX8(0x24, command.sequenceMethod);
+  controller.commitPrepared(command, 500);
+
+  TEST_ASSERT_FALSE(controller.onStrengthResponse(1, 77, 0, 501));
+  TEST_ASSERT_TRUE(controller.waitingForResponse());
+  TEST_ASSERT_FALSE(controller.feedbackSynchronized());
+  TEST_ASSERT_EQUAL_UINT8(77, controller.strengthA());
+  TEST_ASSERT_TRUE(controller.onStrengthResponse(2, 8, 0, 502));
+  TEST_ASSERT_FALSE(controller.waitingForResponse());
+  TEST_ASSERT_TRUE(controller.feedbackSynchronized());
+}
+
+void test_matching_strength_sequences_cycle_from_one_through_fifteen() {
+  StrengthController controller;
+  PreparedStrengthCommand command = {};
+  for (uint8_t i = 0; i < 16; ++i) {
+    controller.requestStrength(Channel::A, StrengthOperation::Increase, 1, i);
+    TEST_ASSERT_TRUE(controller.prepareCommand(i, command));
+    uint8_t expectedSequence = static_cast<uint8_t>((i % 15) + 1);
+    TEST_ASSERT_EQUAL_UINT8(expectedSequence,
+                            static_cast<uint8_t>(command.sequenceMethod >> 4));
+    controller.commitPrepared(command, i);
+    TEST_ASSERT_TRUE(controller.onStrengthResponse(
+        expectedSequence, command.targetStrengthA, 0, i + 1));
+  }
+}
+
+void test_reset_clears_prepared_state_and_strength_feedback() {
+  StrengthController prepared;
+  PreparedStrengthCommand command = {};
+  prepared.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  TEST_ASSERT_TRUE(prepared.prepareCommand(0, command));
+  prepared.resetConnection();
+  TEST_ASSERT_FALSE(prepared.waitingForResponse());
+  TEST_ASSERT_FALSE(prepared.feedbackSynchronized());
+  TEST_ASSERT_EQUAL_UINT8(0, prepared.strengthA());
+  TEST_ASSERT_EQUAL_UINT8(0, prepared.strengthB());
+  TEST_ASSERT_FALSE(prepared.prepareCommand(0, command));
+
+  StrengthController inFlight;
+  inFlight.requestStrength(Channel::B, StrengthOperation::Absolute, 100, 0);
+  TEST_ASSERT_TRUE(inFlight.prepareCommand(0, command));
+  inFlight.commitPrepared(command, 0);
+  inFlight.requestStrength(Channel::B, StrengthOperation::Increase, 5, 0);
+  inFlight.resetConnection();
+  TEST_ASSERT_FALSE(inFlight.waitingForResponse());
+  TEST_ASSERT_FALSE(inFlight.feedbackSynchronized());
+  TEST_ASSERT_EQUAL_UINT8(0, inFlight.strengthA());
+  TEST_ASSERT_EQUAL_UINT8(0, inFlight.strengthB());
+  TEST_ASSERT_FALSE(inFlight.prepareCommand(0, command));
+}
+
+void test_strength_frames_copy_enabled_and_disabled_wave_blocks() {
+  const WaveBlock wave = {{1, 2, 3, 4, 5, 6, 7, 8}};
+  StrengthController controller;
+  controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 0);
+  PreparedStrengthCommand command = {};
+  TEST_ASSERT_TRUE(controller.prepareCommand(0, command));
+
+  B0Frame enabled = {};
+  encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
+           wave, wave, enabled);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wave.bytes, enabled.bytes + 4, kWaveBlockSize);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wave.bytes, enabled.bytes + 12, kWaveBlockSize);
+
+  B0Frame disabled = {};
+  encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
+           kDisabledWave, kDisabledWave, disabled);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kDisabledWave.bytes, disabled.bytes + 4,
+                                kWaveBlockSize);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kDisabledWave.bytes, disabled.bytes + 12,
+                                kWaveBlockSize);
+}
+
 void test_timeout_allows_new_command_without_retry() {
   StrengthController controller;
   controller.requestStrength(Channel::B, StrengthOperation::Absolute, 100, 0);
@@ -233,6 +372,14 @@ int main(int, char**) {
   RUN_TEST(test_a_and_b_relative_intents_share_frame_with_independent_targets);
   RUN_TEST(test_absolute_target_is_adjusted_by_relative_intents_and_clamped);
   RUN_TEST(test_cancelled_relative_intents_do_not_produce_a_command);
+  RUN_TEST(test_request_after_prepare_is_sent_after_matching_feedback);
+  RUN_TEST(test_request_after_prepare_is_merged_once_on_rollback);
+  RUN_TEST(test_relative_intent_over_200_is_chunked_and_resumes_after_feedback);
+  RUN_TEST(test_timed_out_relative_command_has_no_retry_or_pending_intent);
+  RUN_TEST(test_late_feedback_for_timed_out_command_does_not_release_new_command);
+  RUN_TEST(test_matching_strength_sequences_cycle_from_one_through_fifteen);
+  RUN_TEST(test_reset_clears_prepared_state_and_strength_feedback);
+  RUN_TEST(test_strength_frames_copy_enabled_and_disabled_wave_blocks);
   RUN_TEST(test_timeout_allows_new_command_without_retry);
   RUN_TEST(test_absolute_and_relative_requests_merge_per_channel);
   RUN_TEST(test_queued_requests_are_not_lost_on_write_rollback);

@@ -64,6 +64,12 @@ feedback unsynchronized, and does not retry the expired command.
 
 ## Verification
 
+- Reviewer-requested edge coverage was added for requests arriving after
+  prepare, rollback merging, 200-byte relative chunking, timeout non-retry,
+  late feedback while a newer command is in flight, sequence cycling,
+  reset-state clearing, and enabled/disabled waveform copying. These tests use
+  only the public controller API; no production defect was found while adding
+  them.
 - GitHub Actions run `33332756597` exercised the GREEN implementation and
   reported 14 tests passing with one test failure. The failure was in the test
   expectation for the combined method nibble (`0x24`); the implementation's
