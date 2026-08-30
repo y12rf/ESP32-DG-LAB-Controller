@@ -94,7 +94,7 @@ void test_resume_requires_exact_identity() {
   TEST_ASSERT_FALSE(policy.shouldRestore(differentType));
 }
 
-void setup() {
+int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_b0_layout_is_exactly_twenty_bytes);
   RUN_TEST(test_disabled_wave_is_safe_marker);
@@ -105,7 +105,5 @@ void setup() {
   RUN_TEST(test_queued_requests_are_not_lost_on_write_rollback);
   RUN_TEST(test_mismatched_response_keeps_command_in_flight);
   RUN_TEST(test_resume_requires_exact_identity);
-  UNITY_END();
+  return UNITY_END();
 }
-
-void loop() {}
