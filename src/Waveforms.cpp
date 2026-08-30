@@ -1,0 +1,63 @@
+#include "Waveforms.h"
+
+const char* wave_2_0_A[] = {
+  "210100", "210102", "210104", "210106", "210108", "21010A", "21010A", "21010A",
+  "000000", "000000", "000000", "000000"
+};
+const char* wave_2_0_B[] = {
+  "C4080A", "24080A", "84070A", "03070A", "63060A", "E3050A", "43050A", "A3040A",
+  "22040A", "82030A", "02030A", "21010A", "21010A", "21010A", "21010A", "21010A",
+  "21010A", "21010A", "21010A"
+};
+const char* wave_2_0_C[] = {
+  "210100", "618102", "A10105", "E18107", "21020A", "81020A", "C1020A", "010300",
+  "410300", "A10300", "210100", "618102", "A10105", "E18107", "21020A", "81020A",
+  "C1020A", "010300", "410300", "A10300"
+};
+
+const char* wave_3_0_A[] = {
+  "0A0A0A0A00000000", "0A0A0A0A14141414", "0A0A0A0A28282828",
+  "0A0A0A0A3C3C3C3C", "0A0A0A0A50505050", "0A0A0A0A64646464",
+  "0A0A0A0A64646464", "0A0A0A0A64646464", "0A0A0A0A00000000",
+  "0A0A0A0A00000000", "0A0A0A0A00000000", "0A0A0A0A00000000"
+};
+const char* wave_3_0_B[] = {
+  "4A4A4A4A64646464", "4545454564646464", "4040404064646464", "3B3B3B3B64646464",
+  "3636363664646464", "3232323264646464", "2D2D2D2D64646464", "2828282864646464",
+  "2323232364646464", "1E1E1E1E64646464", "1A1A1A1A64646464", "0A0A0A0A64646464",
+  "0A0A0A0A64646464", "0A0A0A0A64646464", "0A0A0A0A64646464", "0A0A0A0A64646464",
+  "0A0A0A0A64646464"
+};
+const char* wave_3_0_C[] = {
+  "0A0A0A0A00000000", "0A0A0A0A32323232", "0A0A0A0A64646464", "0A0A0A0A46464646",
+  "1515151500000000", "1515151532323232", "1515151564646464", "1515151546464646",
+  "2020202000000000", "2020202032323232", "2020202064646464", "2020202064646464",
+  "2B2B2B2B00000000", "2B2B2B2B32323232", "2B2B2B2B64646464", "2B2B2B2B64646464",
+  "3636363600000000", "3636363632323232", "3636363664646464", "3636363646464646"
+};
+
+const int WAVE_2_0_A_LENGTH = 12;
+const int WAVE_2_0_B_LENGTH = 19;
+const int WAVE_2_0_C_LENGTH = 20;
+const int WAVE_3_0_A_LENGTH = 12;
+const int WAVE_3_0_B_LENGTH = 17;
+const int WAVE_3_0_C_LENGTH = 20;
+
+namespace waveforms {
+const char* current(DeviceType deviceType, char selectedWave, int waveIndex) {
+  if (deviceType == DeviceType::DG2) {
+    switch (selectedWave) {
+      case 'a': return wave_2_0_A[waveIndex % WAVE_2_0_A_LENGTH];
+      case 'b': return wave_2_0_B[waveIndex % WAVE_2_0_B_LENGTH];
+      case 'c': return wave_2_0_C[waveIndex % WAVE_2_0_C_LENGTH];
+    }
+  } else if (deviceType == DeviceType::DG3) {
+    switch (selectedWave) {
+      case 'a': return wave_3_0_A[waveIndex % WAVE_3_0_A_LENGTH];
+      case 'b': return wave_3_0_B[waveIndex % WAVE_3_0_B_LENGTH];
+      case 'c': return wave_3_0_C[waveIndex % WAVE_3_0_C_LENGTH];
+    }
+  }
+  return "000000";
+}
+}
