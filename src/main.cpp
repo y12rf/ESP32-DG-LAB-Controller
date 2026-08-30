@@ -97,6 +97,10 @@ bool setStrength_2_0(int channelA, int channelB) {
                       uint8_t((value >> 8) & 0xFF),
                       uint8_t((value >> 16) & 0xFF) };
 
+  if (!bleManager.hasV2StrengthCharacteristic()) {
+    appLog.add("PWM_AB2 特性获取失败");
+    return false;
+  }
   bool success = bleManager.writeV2StrengthBytes(data);
 
   if (success) {
@@ -249,6 +253,7 @@ void finalizeDisconnectedOutput(bool manualDisconnect) {
   if (manualDisconnect) {
     resumePolicy.clearIdentity();
     appState.desiredSending = false;
+    resumePolicy.setDesiredSending(false);
   } else {
     appState.isSending = appState.desiredSending;
   }

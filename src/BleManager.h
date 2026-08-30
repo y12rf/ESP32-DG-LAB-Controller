@@ -26,6 +26,7 @@ class BleManager {
   const std::vector<ScannedDevice>& scannedDevices() const { return scannedDevices_; }
   bool writeV2WaveBytes(const std::vector<uint8_t>& bytesA,
                         const std::vector<uint8_t>& bytesB);
+  bool hasV2StrengthCharacteristic() const { return characteristicPwmAB2_ != nullptr; }
   bool writeV2StrengthBytes(const uint8_t (&bytes)[3]);
   bool writeV3Frame(const dglab::B0Frame& frame);
 

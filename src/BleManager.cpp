@@ -329,10 +329,7 @@ bool BleManager::writeV2WaveBytes(const std::vector<uint8_t>& bytesA,
 }
 
 bool BleManager::writeV2StrengthBytes(const uint8_t (&bytes)[3]) {
-  if (!characteristicPwmAB2_) {
-    log_.add("PWM_AB2 特性获取失败");
-    return false;
-  }
+  if (!characteristicPwmAB2_) return false;
 #ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
   return characteristicPwmAB2_->writeValue(const_cast<uint8_t*>(bytes), 3, true);
 #else
