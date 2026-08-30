@@ -3,22 +3,16 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <BLEDevice.h>
-#include <BLEClient.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
 #include <stdint.h>
 #include <vector>
-#include <atomic>
-#include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
 #include <DgLabControl.h>
 #include "AppState.h"
 #include "AppLog.h"
+#include "BleManager.h"
 #include "Waveforms.h"
 
 using dglab::B0Frame;
 using dglab::Channel;
-using dglab::DeviceIdentity;
 using dglab::PreparedStrengthCommand;
 using dglab::ResumePolicy;
 using dglab::StrengthController;
@@ -30,142 +24,17 @@ const char* ssid = "ESP32-Controller";
 const char* password = "12345678";  // ≥ 8 字符
 WebServer server(80);
 
-//DG-LAB 设备参数
-#define SERVICE_UUID_2_0 "955a180b-0fe2-f5aa-a094-84b8d4f3e8ad"
-#define CHARACTERISTIC_A_UUID_2_0 "955a1506-0fe2-f5aa-a094-84b8d4f3e8ad"
-#define CHARACTERISTIC_B_UUID_2_0 "955a1505-0fe2-f5aa-a094-84b8d4f3e8ad"
-
-#define SERVICE_UUID_3_0 "0000180c-0000-1000-8000-00805f9b34fb"
-#define CHARACTERISTIC_WRITE_3_0 "0000150a-0000-1000-8000-00805f9b34fb"
-#define CHARACTERISTIC_NOTIFY_3_0 "0000150b-0000-1000-8000-00805f9b34fb"
-
-const char* devicePrefix_2_0 = "D-LAB";
-const char* devicePrefix_3_0 = "47";
-
 AppState appState;
 AppLog appLog;
+BleManager bleManager(appState, appLog);
 
-//BLE 全局
-BLEClient* pClient = nullptr;
-BLERemoteCharacteristic* pCharacteristicA_2_0 = nullptr;
-BLERemoteCharacteristic* pCharacteristicB_2_0 = nullptr;
-BLERemoteCharacteristic* pCharacteristic_3_0_Write = nullptr;
-BLERemoteCharacteristic* pCharacteristic_3_0_Notify = nullptr;
-
-// 自动扫描控制
-const unsigned long autoScanIntervalMs = 10000;  // 扫描间隔 10 秒
 StrengthController strengthController;
 ResumePolicy resumePolicy;
 //通道强度控制
 
-std::vector<ScannedDevice> scannedDevices;
-
-QueueHandle_t bleEventQueue = nullptr;
-std::atomic<uint32_t> droppedBleEvents(0);
-
-void enqueueBleEvent(const BleEvent& event) {
-  if (!bleEventQueue || xQueueSend(bleEventQueue, &event, 0) != pdPASS) {
-    droppedBleEvents.fetch_add(1, std::memory_order_relaxed);
-  }
-}
-
-DeviceIdentity makeIdentity(BLEAddress address, uint8_t addressType) {
-  DeviceIdentity identity = {{0, 0, 0, 0, 0, 0}, addressType};
-  esp_bd_addr_t* native = address.getNative();
-  if (native) std::copy(*native, *native + 6, identity.address);
-  return identity;
-}
-
-bool connectToDevice(const String& address, DeviceType type,
-                     const DeviceIdentity* identity = nullptr,
-                     bool manualSelection = false);
-
-bool autoConnectNearestDevice() {
-  if (appState.deviceConnected || appState.clientCleanupPending) {
-    appLog.add("已连接设备，跳过自动连接");
-    return false;
-  }
-  if (scannedDevices.empty()) {
-    appLog.add("未扫描到可连接的设备");
-    return false;
-  }
-
-  const ScannedDevice* best = nullptr;
-  if (appState.desiredSending && appState.connectedIdentityValid) {
-    for (auto& d : scannedDevices) {
-      if (d.type == appState.resumeDeviceType && dglab::sameIdentity(d.identity, appState.connectedIdentity)) {
-        best = &d;
-        break;
-      }
-    }
-    if (!best) return false;
-  } else {
-    best = &scannedDevices[0];
-    for (auto& d : scannedDevices) {
-      if (d.rssi > best->rssi) best = &d;
-    }
-  }
-
-  appLog.add("自动连接距离最近的设备: " + best->name + " RSSI=" + String(best->rssi));
-  if (!connectToDevice(best->address, best->type, &best->identity, false)) {
-    appLog.add("自动连接失败");
-    return false;
-  }
-  return true;
-}
-
-//BLE扫描回调
-class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    if (!advertisedDevice.haveName()) return;
-
-    String name = advertisedDevice.getName().c_str();
-    String address = advertisedDevice.getAddress().toString().c_str();
-
-    if (name.startsWith(devicePrefix_2_0) || name.startsWith(devicePrefix_3_0)) {
-      DeviceType type = name.startsWith(devicePrefix_2_0) ? DeviceType::DG2 : DeviceType::DG3;
-      int rssi = advertisedDevice.getRSSI();
-      DeviceIdentity identity = makeIdentity(advertisedDevice.getAddress(),
-                                             static_cast<uint8_t>(advertisedDevice.getAddressType()));
-      bool exist = false;
-      for (auto& d : scannedDevices)
-        if (d.address == address) {
-          exist = true;
-          break;
-        }
-      if (!exist) {
-        scannedDevices.push_back({ name, address, type, rssi, identity });
-      }
-    }
-  }
-};
-
-static MyAdvertisedDeviceCallbacks scanCallbacks;
-
-// ---------- BLE 连接 / 断开回调 ----------
-class MyClientCallback : public BLEClientCallbacks {
-  void onConnect(BLEClient*) override {
-    appState.bleLinkAlive.store(true, std::memory_order_release);
-  }
-  void onDisconnect(BLEClient*) override {
-    appState.bleLinkAlive.store(false, std::memory_order_release);
-    enqueueBleEvent({BleEventType::Disconnected, 0, 0, 0});
-  }
-};
-
-static MyClientCallback clientCallbacks;
-
-// ---------- Notify 数据回调（3.0） ----------
-void notifyCallback(BLERemoteCharacteristic*, uint8_t* pData, size_t length, bool isNotify) {
-  if (!isNotify || length < 4) return;
-  if (pData[0] != 0xB1) return;  // 只处理 B1 回应
-  enqueueBleEvent({BleEventType::StrengthResponse, pData[1], pData[2], pData[3]});
-}
-
 void processBleEvents() {
-  if (!bleEventQueue) return;
   BleEvent event;
-  while (xQueueReceive(bleEventQueue, &event, 0) == pdPASS) {
+  while (bleManager.pollEvent(event)) {
     if (event.type == BleEventType::StrengthResponse) {
       strengthController.onStrengthResponse(event.sequence, event.strengthA,
                                             event.strengthB, millis());
@@ -176,10 +45,7 @@ void processBleEvents() {
       appState.isInputAllowed = !appState.waitingForResponse;
       appLog.add("收到强度回应: 序列号=" + String(event.sequence) + ", A=" + String(appState.strengthA) + ", B=" + String(appState.strengthB));
     } else if (event.type == BleEventType::Disconnected) {
-      appLog.add("设备连接断开");
-      appState.deviceConnected.store(false, std::memory_order_release);
-      appState.linkReady.store(false, std::memory_order_release);
-      appState.clientCleanupPending = true;
+      bleManager.handleDisconnectEvent();
     }
   }
 }
@@ -210,26 +76,11 @@ std::vector<uint8_t> hexToBytes(const String& hex) {
 bool sendData_2_0(const String& hexA, const String& hexB) {
   if (!appState.deviceConnected || appState.deviceType != DeviceType::DG2) return false;
 
-  auto writeBuf = [&](BLERemoteCharacteristic* ch, const String& hex) -> bool {
-    if (!ch) return false;
-    bool canWriteRsp = ch->canWrite();
-    bool canWriteNR = ch->canWriteNoResponse();
-    if (!(canWriteRsp || canWriteNR)) return false;
-
-    std::vector<uint8_t> bytes = hexToBytes(hex);
-    if (hex.length() > 0 && bytes.empty()) return false;
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-    return ch->writeValue(bytes.data(), bytes.size(), canWriteRsp);
-#else
-    uint8_t* data = new uint8_t[bytes.size()];
-    std::copy(bytes.begin(), bytes.end(), data);
-    ch->writeValue(data, bytes.size(), canWriteRsp);
-    delete[] data;
-    return true;
-#endif
-  };
-
-  return writeBuf(pCharacteristicA_2_0, hexA) && writeBuf(pCharacteristicB_2_0, hexB);
+  std::vector<uint8_t> bytesA = hexToBytes(hexA);
+  if (hexA.length() > 0 && bytesA.empty()) return false;
+  std::vector<uint8_t> bytesB = hexToBytes(hexB);
+  if (hexB.length() > 0 && bytesB.empty()) return false;
+  return bleManager.writeV2WaveBytes(bytesA, bytesB);
 }
 
 /* ========== 2.0 设备强度设置 ========== */
@@ -241,25 +92,12 @@ bool setStrength_2_0(int channelA, int channelB) {
   channelA = constrain(channelA, 0, 2047);
   channelB = constrain(channelB, 0, 2047);
 
-  BLERemoteCharacteristic* pPwmAB2 =
-    pClient->getService(BLEUUID(SERVICE_UUID_2_0))
-      ->getCharacteristic(BLEUUID("955a1504-0fe2-f5aa-a094-84b8d4f3e8ad"));
-  if (!pPwmAB2) {
-    appLog.add("PWM_AB2 特性获取失败");
-    return false;
-  }
-
   uint32_t value = ((channelA & 0x7FF) << 11) | (channelB & 0x7FF);
   uint8_t data[3] = { uint8_t(value & 0xFF),
                       uint8_t((value >> 8) & 0xFF),
                       uint8_t((value >> 16) & 0xFF) };
 
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-  bool success = pPwmAB2->writeValue(data, 3, true);
-#else
-  pPwmAB2->writeValue(data, 3, true);
-  bool success = true;
-#endif
+  bool success = bleManager.writeV2StrengthBytes(data);
 
   if (success) {
     appState.strengthA = channelA;
@@ -269,82 +107,6 @@ bool setStrength_2_0(int channelA, int channelB) {
     appLog.add("设置2.0强度失败");
   }
   return success;
-}
-
-/* ========== 3.0 设备数据发送 ========== */
-bool sendData_3_0(const String& waveData,
-                  bool changeStrength = false,
-                  int strA = 0, int strB = 0,
-                  uint8_t method = 0) {
-  if (!appState.deviceConnected || appState.deviceType != DeviceType::DG3) return false;
-
-  auto writeBuf = [&](BLERemoteCharacteristic* ch, const std::vector<uint8_t>& bytes) -> bool {
-    if (!ch) return false;
-    bool canWriteRsp = ch->canWrite();
-    bool canWriteNR = ch->canWriteNoResponse();
-    if (!(canWriteRsp || canWriteNR)) return false;
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-    return ch->writeValue(bytes.data(), bytes.size(), canWriteRsp);
-#else
-    uint8_t* data = new uint8_t[bytes.size()];
-    std::copy(bytes.begin(), bytes.end(), data);
-    ch->writeValue(data, bytes.size(), canWriteRsp);
-    delete[] data;
-    return true;
-#endif
-  };
-
-  std::vector<uint8_t> commandBytes;
-  commandBytes.push_back(0xB0);  // 指令头
-
-  bool issuedChange = changeStrength && appState.isInputAllowed;
-  uint8_t seqMethod = 0x00;
-  if (issuedChange) {
-    appState.orderNo = (appState.orderNo + 1) & 0x0F;  // 序列号循环 1-15
-    if (appState.orderNo == 0) appState.orderNo = 1;
-    seqMethod = (appState.orderNo << 4) | (method & 0x0F);
-    appState.waitingForResponse = true;
-    appState.isInputAllowed = false;
-  }
-  commandBytes.push_back(seqMethod);
-  commandBytes.push_back(strA & 0xFF);
-  commandBytes.push_back(strB & 0xFF);
-
-  std::vector<uint8_t> waveBytes = hexToBytes(waveData);
-  if (waveData.length() > 0 && waveBytes.empty()) return false;
-  commandBytes.insert(commandBytes.end(), waveBytes.begin(), waveBytes.end());
-  while (commandBytes.size() < 20) commandBytes.push_back(0x00);
-
-  bool success = writeBuf(pCharacteristic_3_0_Write, commandBytes);
-  if (!success && issuedChange) {
-    appState.isInputAllowed = true;
-    appState.waitingForResponse = false;
-    appLog.add("写入失败，已回滚输入状态");
-  }
-
-  return success;
-}
-
-/* ========== 统一数据发送 ========== */
-bool sendData(const String& hexData, const String& hexDataB) {
-  if (!appState.deviceConnected) {
-    appLog.add("设备未连接");
-    return false;
-  }
-  return (appState.deviceType == DeviceType::DG2) ? sendData_2_0(hexData, hexDataB)
-                                         : sendData_3_0(hexData);
-}
-
-/* ========== 强度设置包装 ========== */
-bool setStrength(int channelA, int channelB, uint8_t method) {
-  if (!appState.deviceConnected || appState.deviceType != DeviceType::DG3) return false;
-  if (method == 0x0C) {
-    strengthController.requestStrength(Channel::A, StrengthOperation::Absolute, channelA, millis());
-  }
-  if (method == 0x03) {
-    strengthController.requestStrength(Channel::B, StrengthOperation::Absolute, channelB, millis());
-  }
-  return true;
 }
 
 /* ========== A/B 通道相对/绝对调整 ========== */
@@ -386,17 +148,6 @@ bool adjustStrengthB(int value, uint8_t method) {
   }
 }
 
-bool writeB0Frame(const B0Frame& frame) {
-  if (!pCharacteristic_3_0_Write || !appState.deviceConnected || appState.deviceType != DeviceType::DG3) return false;
-  if (!pCharacteristic_3_0_Write->canWrite() && !pCharacteristic_3_0_Write->canWriteNoResponse()) return false;
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-  return pCharacteristic_3_0_Write->writeValue(frame.bytes, sizeof(frame.bytes), true);
-#else
-  pCharacteristic_3_0_Write->writeValue(const_cast<uint8_t*>(frame.bytes), sizeof(frame.bytes), true);
-  return true;
-#endif
-}
-
 WaveBlock currentWaveBlock() {
   WaveBlock block = {{10, 10, 10, 10, 0, 0, 0, 101}};
   const char* current = waveforms::current(appState.deviceType, appState.selectedWave,
@@ -420,7 +171,7 @@ void drainStrengthCommand() {
   B0Frame frame = {};
   dglab::encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
                   wave, wave, frame);
-  if (writeB0Frame(frame)) {
+  if (bleManager.writeV3Frame(frame)) {
     strengthController.commitPrepared(command, now);
     appState.strengthA = strengthController.strengthA();
     appState.strengthB = strengthController.strengthB();
@@ -452,7 +203,7 @@ void handleWaveSend() {
       const WaveBlock wave = currentWaveBlock();
       B0Frame frame = {};
       dglab::encodeB0(2, 0, static_cast<uint8_t>(appState.strengthA), static_cast<uint8_t>(appState.strengthB), wave, wave, frame);
-      success = writeB0Frame(frame);
+      success = bleManager.writeV3Frame(frame);
     }
 
     if (!success) {
@@ -467,227 +218,46 @@ void handleWaveSend() {
     B0Frame frame = {};
     dglab::encodeB0(2, 0, static_cast<uint8_t>(appState.strengthA), static_cast<uint8_t>(appState.strengthB),
                     dglab::kDisabledWave, dglab::kDisabledWave, frame);
-    if (!writeB0Frame(frame)) appState.linkReady.store(false, std::memory_order_release);
+    if (!bleManager.writeV3Frame(frame)) appState.linkReady.store(false, std::memory_order_release);
   }
 }
 
-/* ========== 断开 / 连接 ========== */
-void disconnectDevice() {
-  if (appState.deviceConnected && pClient) {
-    appState.manualDisconnectRequested = true;
+void finalizeConnectedOutput(bool manualSelection) {
+  if (appState.deviceType == DeviceType::DG3) {
+    appState.strengthA = 0;
+    appState.strengthB = 0;
+  }
+  appState.strengthConfirmed = (appState.deviceType == DeviceType::DG2);
+  if (appState.connectedIdentityValid) resumePolicy.remember(appState.connectedIdentity);
+  if (manualSelection) {
     appState.desiredSending = false;
     resumePolicy.setDesiredSending(false);
     appState.isSending = false;
-    pClient->disconnect();
-    appLog.add("已断开连接");
+  } else {
+    appState.isSending = appState.connectedIdentityValid &&
+                         resumePolicy.shouldRestore(appState.connectedIdentity);
   }
+  appState.desiredSending = appState.isSending;
+  resumePolicy.setDesiredSending(appState.desiredSending);
+  if (appState.deviceType == DeviceType::DG3) strengthController.resetConnection();
+  appState.orderNo = 0;
+  appState.isInputAllowed = true;
+  appState.waitingForResponse = false;
 }
 
-void handleDisconnectedClient() {
-  if (!appState.clientCleanupPending) return;
-  appState.clientCleanupPending = false;
-  appState.deviceConnected.store(false, std::memory_order_release);
-  appState.linkReady.store(false, std::memory_order_release);
-  if (pClient) {
-    delete pClient;
-    pClient = nullptr;
-  }
-  pCharacteristicA_2_0 = nullptr;
-  pCharacteristicB_2_0 = nullptr;
-  pCharacteristic_3_0_Write = nullptr;
-  pCharacteristic_3_0_Notify = nullptr;
-  appState.deviceType = DeviceType::None;
-  if (appState.manualDisconnectRequested) {
-    appState.manualDisconnectRequested = false;
-    appState.connectedIdentityValid = false;
+void finalizeDisconnectedOutput(bool manualDisconnect) {
+  if (manualDisconnect) {
     resumePolicy.clearIdentity();
     appState.desiredSending = false;
   } else {
     appState.isSending = appState.desiredSending;
   }
   strengthController.resetConnection();
-  appState.strengthA = appState.strengthB = 0;
+  appState.strengthA = 0;
+  appState.strengthB = 0;
   appState.strengthConfirmed = false;
   appState.waitingForResponse = false;
   appState.isInputAllowed = true;
-}
-
-bool connectToDevice(const String& address, DeviceType type,
-                     const DeviceIdentity* identity, bool manualSelection) {
-  if (type == DeviceType::None) {
-    appLog.add("未知设备类型");
-    return false;
-  }
-  if (appState.deviceConnected || appState.clientCleanupPending) return false;
-  BLEDevice::getScan()->stop();  // 避免连接时仍在扫描
-
-  appLog.add("连接: " + address);
-
-  BLEAddress bleAddress(address.c_str());
-  pClient = BLEDevice::createClient();
-  pClient->setClientCallbacks(&clientCallbacks);
-
-  const uint8_t addressType = identity ? identity->addressType : 1;
-  if (!pClient->connect(bleAddress, static_cast<esp_ble_addr_type_t>(addressType))) {
-    appLog.add("连接失败");
-    delete pClient;
-    pClient = nullptr;
-    appState.deviceType = DeviceType::None;
-    return false;
-  }
-
-  appLog.add("连接成功，MTU=517");
-  pClient->setMTU(517);
-  bool ok = false;
-
-  auto getServiceWithRetry = [&](const BLEUUID& uuid) -> BLERemoteService* {
-    const int maxRetries = 10;
-    const unsigned long retryDelayMs = 150;  // 100-200ms 之间
-    BLERemoteService* service = nullptr;
-    for (int attempt = 0; attempt < maxRetries && !service; ++attempt) {
-      service = pClient->getService(uuid);
-      if (service || attempt == maxRetries - 1) {
-        break;
-      }
-      delay(retryDelayMs);
-    }
-    return service;
-  };
-
-  if (type == DeviceType::DG2) {  // ----- 2.0 -----
-    auto service = getServiceWithRetry(BLEUUID(SERVICE_UUID_2_0));
-    if (service) {
-      pCharacteristicA_2_0 = service->getCharacteristic(BLEUUID(CHARACTERISTIC_A_UUID_2_0));
-      pCharacteristicB_2_0 = service->getCharacteristic(BLEUUID(CHARACTERISTIC_B_UUID_2_0));
-      ok = (pCharacteristicA_2_0 && pCharacteristicB_2_0);
-
-      // 读取初始强度
-      BLERemoteCharacteristic* pPwmAB2 =
-        service->getCharacteristic(BLEUUID("955a1504-0fe2-f5aa-a094-84b8d4f3e8ad"));
-      if (pPwmAB2 && pPwmAB2->canRead()) {
-        auto value = pPwmAB2->readValue();
-        if (value.length() >= 3) {
-          uint8_t valueBytes[3] = {
-            static_cast<uint8_t>(value[0]),
-            static_cast<uint8_t>(value[1]),
-            static_cast<uint8_t>(value[2]),
-          };
-          uint32_t data = (valueBytes[2] << 16) | (valueBytes[1] << 8) | valueBytes[0];
-          appState.strengthA = (data >> 11) & 0x7FF;
-          appState.strengthB = data & 0x7FF;
-          appLog.add("获取当前强度: A=" + String(appState.strengthA) + ", B=" + String(appState.strengthB));
-        }
-      }
-    }
-  } else if (type == DeviceType::DG3) {  // ----- 3.0 -----
-    auto service = getServiceWithRetry(BLEUUID(SERVICE_UUID_3_0));
-    if (service) {
-      pCharacteristic_3_0_Write = service->getCharacteristic(BLEUUID(CHARACTERISTIC_WRITE_3_0));
-      pCharacteristic_3_0_Notify = service->getCharacteristic(BLEUUID(CHARACTERISTIC_NOTIFY_3_0));
-      ok = (pCharacteristic_3_0_Write && pCharacteristic_3_0_Notify &&
-            (pCharacteristic_3_0_Write->canWrite() || pCharacteristic_3_0_Write->canWriteNoResponse()) &&
-            pCharacteristic_3_0_Notify->canNotify());
-
-      if (ok && pCharacteristic_3_0_Notify->canNotify()) {
-        pCharacteristic_3_0_Notify->registerForNotify(notifyCallback);
-        appLog.add("已注册通知回调");
-
-        // 发送 BF 指令设定软上限
-        std::vector<uint8_t> bfCommand = { 0xBF, 200, 200, 128, 0, 128, 0 };
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-        pCharacteristic_3_0_Write->writeValue(bfCommand.data(), bfCommand.size(), true);
-#else
-        uint8_t* data = new uint8_t[bfCommand.size()];
-        std::copy(bfCommand.begin(), bfCommand.end(), data);
-        pCharacteristic_3_0_Write->writeValue(data, bfCommand.size(), true);
-        delete[] data;
-#endif
-        appLog.add("已发送软上限设置");
-      }
-    }
-  }
-
-  if (!ok) {
-    appLog.add("服务/特性获取失败");
-    pClient->disconnect();
-    appState.clientCleanupPending = true;
-    appState.deviceType = DeviceType::None;
-    return false;
-  }
-
-  appState.deviceType = type;
-  appState.resumeDeviceType = type;
-  appState.deviceConnected.store(true, std::memory_order_release);
-  appState.linkReady.store(true, std::memory_order_release);
-  appState.bleLinkAlive.store(true, std::memory_order_release);
-  for (auto& d : scannedDevices)
-    if (d.address == address) appState.connectedDeviceName = d.name;
-  appState.connectedDeviceAddress = address;
-  if (appState.connectedDeviceName.length() == 0) appState.connectedDeviceName = address;
-  if (type == DeviceType::DG3) { appState.strengthA = appState.strengthB = 0; }
-  appState.strengthConfirmed = (type == DeviceType::DG2);
-  if (identity) {
-    appState.connectedIdentity = *identity;
-    appState.connectedIdentityValid = true;
-    resumePolicy.remember(appState.connectedIdentity);
-  }
-  if (manualSelection) {
-    appState.desiredSending = false;
-    resumePolicy.setDesiredSending(false);
-    appState.isSending = false;
-  } else {
-    appState.isSending = resumePolicy.shouldRestore(appState.connectedIdentity);
-  }
-  appState.desiredSending = appState.isSending;
-  resumePolicy.setDesiredSending(appState.desiredSending);
-  if (type == DeviceType::DG3) strengthController.resetConnection();
-  appState.orderNo = 0;
-  appState.isInputAllowed = true;
-  appState.waitingForResponse = false;
-  return true;
-}
-
-/* ========== 扫描 ========== */
-void startBleScan() {
-  if (appState.deviceConnected) {
-    appLog.add("设备已连接，跳过扫描请求");
-    return;
-  }
-  if (appState.scanInProgress) {
-    appLog.add("扫描进行中，忽略新的扫描请求");
-    return;
-  }
-  appState.scanInProgress = true;
-  appLog.add("开始扫描");
-  scannedDevices.clear();
-  auto scan = BLEDevice::getScan();
-  scan->setAdvertisedDeviceCallbacks(&scanCallbacks);
-  scan->setActiveScan(true);
-  scan->start(3);
-  scan->stop();
-  appState.scanInProgress = false;
-  appState.lastScanFinished = millis();
-  if (appState.autoConnectEnabled) {
-    autoConnectNearestDevice();
-  } else {
-    appLog.add("自动连接已关闭，等待手动操作");
-  }
-}
-
-void handleAutoScan() {
-  if (appState.deviceConnected) {
-    if (!appState.autoScanSuppressedLogged) {
-      appLog.add("设备已连接，跳过自动扫描");
-      appState.autoScanSuppressedLogged = true;
-    }
-    return;
-  }
-  appState.autoScanSuppressedLogged = false;
-  if (appState.scanInProgress) return;
-  unsigned long now = millis();
-  if (now - appState.lastScanFinished >= autoScanIntervalMs) {
-    startBleScan();
-  }
 }
 
 /* ========== WEBUI ========== */
@@ -849,9 +419,9 @@ String makeHTML() {
   }
 
   /* -------- 设备列表 -------- */
-  if (!appState.deviceConnected && !scannedDevices.empty()) {
+  if (!appState.deviceConnected && !bleManager.scannedDevices().empty()) {
     html += "<div class='panel'><h2>可用设备</h2>";
-    for (auto& d : scannedDevices) {
+    for (auto& d : bleManager.scannedDevices()) {
       html += "<a class='device-item' href='/connect?address=";
       html += d.address + "&type=" + String(deviceTypeToInt(d.type)) + "'>";
       html += d.name + " (" + String(deviceTypeLabel(d.type)) + ", RSSI=" + String(d.rssi) + "dBm)</a>";
@@ -878,7 +448,7 @@ void setupWeb() {
 
   /* ---- 扫描设备 ---- */
   server.on("/scan", HTTP_GET, []() {
-    startBleScan();
+    if (bleManager.startBleScan()) finalizeConnectedOutput(false);
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
@@ -901,11 +471,13 @@ void setupWeb() {
       } else {
         const String address = server.arg("address");
         const ScannedDevice* selected = nullptr;
-        for (auto& d : scannedDevices) {
+        for (auto& d : bleManager.scannedDevices()) {
           if (d.address == address && d.type == type) { selected = &d; break; }
         }
-        if (!selected || !connectToDevice(address, type, &selected->identity, true)) {
-        appLog.add("连接失败: 类型无效或连接错误");
+        if (!selected || !bleManager.connectToDevice(address, type, &selected->identity, true)) {
+          appLog.add("连接失败: 类型无效或连接错误");
+        } else {
+          finalizeConnectedOutput(true);
         }
       }
     }
@@ -915,7 +487,7 @@ void setupWeb() {
 
   /* ---- 断开连接 ---- */
   server.on("/disconnect", HTTP_GET, []() {
-    disconnectDevice();
+    bleManager.disconnectDevice();
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
@@ -996,7 +568,7 @@ void setup() {
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
   BLEDevice::init("ESP32_DGLAB_Client");
-  bleEventQueue = xQueueCreate(16, sizeof(BleEvent));
+  bleManager.begin();
   setupWeb();
   appLog.add("系统初始化完成");
   appState.lastScanFinished = millis();
@@ -1005,9 +577,12 @@ void setup() {
 void loop() {
   server.handleClient();
   processBleEvents();
-  handleDisconnectedClient();
+  bool manualDisconnect = false;
+  if (bleManager.handleDisconnectedClient(manualDisconnect)) {
+    finalizeDisconnectedOutput(manualDisconnect);
+  }
   drainStrengthCommand();
   handleWaveSend();
-  handleAutoScan();
+  if (bleManager.handleAutoScan()) finalizeConnectedOutput(false);
   delay(10);
 }
