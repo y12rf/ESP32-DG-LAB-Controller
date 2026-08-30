@@ -101,7 +101,7 @@ void test_a_and_b_relative_intents_share_frame_with_independent_targets() {
   controller.requestStrength(Channel::A, StrengthOperation::Increase, 5, 2);
   controller.requestStrength(Channel::B, StrengthOperation::Decrease, 20, 2);
   TEST_ASSERT_TRUE(controller.prepareCommand(2, command));
-  TEST_ASSERT_EQUAL_HEX8(0x24, command.sequenceMethod);
+  TEST_ASSERT_EQUAL_HEX8(0x26, command.sequenceMethod);
   TEST_ASSERT_EQUAL_UINT8(5, command.strengthA);
   TEST_ASSERT_EQUAL_UINT8(20, command.strengthB);
   TEST_ASSERT_EQUAL_UINT8(105, command.targetStrengthA);

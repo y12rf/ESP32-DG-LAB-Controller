@@ -64,6 +64,12 @@ feedback unsynchronized, and does not retry the expired command.
 
 ## Verification
 
+- GitHub Actions run `33332756597` exercised the GREEN implementation and
+  reported 14 tests passing with one test failure. The failure was in the test
+  expectation for the combined method nibble (`0x24`); the implementation's
+  `0x26` is correct because A increase is `0x04`, B decrease is `0x02`, and
+  sequence 2 occupies the high nibble. The expectation was corrected in the
+  follow-up test commit.
 - `C:\Users\h\.platformio\penv\Scripts\platformio.exe run -e esp32dev`
   passed; firmware image was linked successfully.
 - Native test execution is blocked locally by the absent host compiler as
