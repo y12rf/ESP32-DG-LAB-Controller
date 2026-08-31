@@ -87,5 +87,37 @@ class WebUiActionApiContractTest(unittest.TestCase):
         self.assertIn("RequestDisposition::Rejected", source)
 
 
+class WebUiBrowserContractTest(unittest.TestCase):
+    def test_browser_uses_all_api_paths(self):
+        source = read(ASSETS_CPP)
+        for route in (
+            "/api/status", "/api/devices", "/api/logs", "/api/scan",
+            "/api/connect", "/api/disconnect", "/api/auto-connect",
+            "/api/output", "/api/wave", "/api/strength",
+        ):
+            self.assertIn(route, source)
+
+    def test_polling_and_visibility_contract(self):
+        source = read(ASSETS_CPP)
+        self.assertIn("STATUS_INTERVAL_MS=1000", source)
+        self.assertIn("LOG_INTERVAL_MS=2000", source)
+        self.assertIn("statusInFlight", source)
+        self.assertIn("visibilitychange", source)
+        self.assertIn("document.hidden", source)
+
+    def test_safe_dom_updates_and_form_posts(self):
+        source = read(ASSETS_CPP)
+        self.assertIn("textContent", source)
+        self.assertIn("URLSearchParams", source)
+        self.assertIn("method:'POST'", source)
+        self.assertNotIn("innerHTML", source)
+
+    def test_discrete_strength_controls_are_present(self):
+        source = read(ASSETS_CPP)
+        for value in ("-10", "-5", "-1", "+1", "+5", "+10", "归零", "50%"):
+            self.assertIn(value, source)
+        self.assertNotIn('type="range"', source)
+
+
 if __name__ == "__main__":
     unittest.main()
