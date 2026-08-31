@@ -88,20 +88,15 @@ void BleManager::ClientCallbacks::onDisconnect(BLEClient*) {
   owner_.enqueueEvent({BleEventType::Disconnected, 0, 0, 0});
 }
 
-void BleManager::notifyCallback(BLERemoteCharacteristic* characteristic,
-                                uint8_t* data,
+void BleManager::notifyCallback(BLERemoteCharacteristic*, uint8_t* data,
                                 size_t length, bool isNotify) {
-  if (notifyOwner_) {
-    notifyOwner_->handleNotification(characteristic, data, length, isNotify);
-  }
+  if (notifyOwner_) notifyOwner_->handleNotification(data, length, isNotify);
 }
 
-void BleManager::handleNotification(BLERemoteCharacteristic* characteristic,
-                                    uint8_t* data, size_t length,
+void BleManager::handleNotification(uint8_t* data, size_t length,
                                     bool isNotify) {
   if (!isNotify) return;
-  if (characteristic == characteristicPwmAB2_) {
-    if (length < 3) return;
+  if (length == 3) {
     uint8_t bytes[3] = {data[0], data[1], data[2]};
     uint16_t strengthA = 0;
     uint16_t strengthB = 0;
@@ -109,10 +104,7 @@ void BleManager::handleNotification(BLERemoteCharacteristic* characteristic,
     enqueueEvent({BleEventType::V2StrengthFeedback, 0, strengthA, strengthB});
     return;
   }
-  if (characteristic != characteristicNotify3_ || length < 4 ||
-      data[0] != 0xB1) {
-    return;
-  }
+  if (length < 4 || data[0] != 0xB1) return;
   enqueueEvent({BleEventType::StrengthResponse, data[1], data[2], data[3]});
 }
 

@@ -24,14 +24,14 @@ void test_disabled_wave_is_safe_marker() {
 }
 
 void test_v2_strength_decode_uses_little_endian_11_bit_channels() {
-  const uint8_t bytes[3] = {0xFF, 0xFF, 0x3F};
+  const uint8_t bytes[3] = {0x01, 0x02, 0x03};
   uint16_t strengthA = 0;
   uint16_t strengthB = 0;
 
   decodeV2Strength(bytes, strengthA, strengthB);
 
-  TEST_ASSERT_EQUAL_UINT16(2047, strengthA);
-  TEST_ASSERT_EQUAL_UINT16(2047, strengthB);
+  TEST_ASSERT_EQUAL_UINT16(96, strengthA);
+  TEST_ASSERT_EQUAL_UINT16(513, strengthB);
 }
 
 void test_wave_schedule_handles_rollover() {
