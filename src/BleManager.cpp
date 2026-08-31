@@ -190,6 +190,12 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
     return false;
   }
 
+  // The client is now link-connected even though profile discovery is not
+  // ready yet.  Keeping this state visible lets a dropped disconnect event
+  // use the link-alive fallback during discovery failure as well.
+  state_.deviceConnected.store(true, std::memory_order_release);
+  state_.bleLinkAlive.store(true, std::memory_order_release);
+
   log_.add("连接成功，MTU=517");
   client_->setMTU(517);
   bool ok = false;
@@ -248,17 +254,15 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
 
   if (!ok) {
     log_.add("服务/特性获取失败");
+    state_.linkReady.store(false, std::memory_order_release);
     client_->disconnect();
-    state_.clientCleanupPending = true;
     state_.deviceType = DeviceType::None;
     return false;
   }
 
   state_.deviceType = type;
   state_.resumeDeviceType = type;
-  state_.deviceConnected.store(true, std::memory_order_release);
   state_.linkReady.store(true, std::memory_order_release);
-  state_.bleLinkAlive.store(true, std::memory_order_release);
   for (auto& d : scannedDevices_)
     if (d.address == address) state_.connectedDeviceName = d.name;
   state_.connectedDeviceAddress = address;
@@ -312,6 +316,7 @@ void BleManager::disconnectDevice() {
     state_.manualDisconnectRequested = true;
     state_.desiredSending = false;
     state_.isSending = false;
+    state_.linkReady.store(false, std::memory_order_release);
     client_->disconnect();
     log_.add("已断开连接");
   }
@@ -320,10 +325,10 @@ void BleManager::disconnectDevice() {
 void BleManager::handleTransportFailure() {
   state_.linkReady.store(false, std::memory_order_release);
   state_.manualDisconnectRequested = false;
-  state_.bleLinkAlive.store(false, std::memory_order_release);
   if (client_ && state_.deviceConnected.load(std::memory_order_acquire)) {
     client_->disconnect();
   } else {
+    state_.bleLinkAlive.store(false, std::memory_order_release);
     state_.deviceConnected.store(false, std::memory_order_release);
     state_.clientCleanupPending = false;
   }

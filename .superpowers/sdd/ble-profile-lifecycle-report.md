@@ -15,6 +15,10 @@
 4. cleanup 在删除 client 前清空全部 characteristic 指针，并同步 `bleLinkAlive=false`。`connectToDevice()` 现在强制接收 `const DeviceIdentity&`，不再有默认地址类型。
 5. 手动连接在调用 BLE connect 前清除旧 resume identity/desired state；V2 wave、V2 strength、V3 B0 的写失败均调用 `handleTransportFailure()`，清 link-ready、保持非 manual 并请求断开，交给 unexpected-disconnect 恢复路径。
 
+## Follow-up 生命周期时序修正
+
+复核发现，transport failure 不能在调用 `client_->disconnect()` 前主动写 `bleLinkAlive=false`：这样 loop 可能在异步 `onDisconnect` callback 尚未返回时合成断连并提前释放 client。现在有 client 且处于连接态时仅清 `linkReady` 并请求 disconnect，`bleLinkAlive` 只由 callback 更新；`clientCleanupPending` 也只由已消费的 disconnect event 设置，避免 callback 前删除。队列溢出 fallback 仍依赖 callback 先写入 false。成功 GATT 连接后会先标记连接态再做 profile discovery，`!ok` 路径以相同 deferred cleanup 退出。manual disconnect 同样先停写并请求 disconnect，保留 alive 由 callback 更新。
+
 ## Classic API 限制
 
 当前 ESP32 Arduino BLE Classic 头文件中的 `BLERemoteCharacteristic::writeValue(uint8_t*, size_t, bool)` 返回 `void`，因此无法同步确认传输结果；实现只在 Classic 分支将“调用完成”作为成功。统一 helper 仍按 characteristic 能力选择 response/no-response。带 bool 返回的 NimBLE 分支直接传播 false，BF 失败会走连接失败的 deferred cleanup。
