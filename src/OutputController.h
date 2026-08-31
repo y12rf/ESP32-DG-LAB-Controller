@@ -12,7 +12,8 @@ class OutputController {
   void onConnected(bool manualSelection);
   void onDisconnected(bool manualDisconnect);
   void onStrengthResponse(const BleEvent& event);
-  bool adjustStrength(char channel, int value, uint8_t method);
+  dglab::RequestDisposition adjustStrength(char channel, int value,
+                                           uint8_t method);
   void startSending();
   void stopSending();
   void selectWave(char wave);
@@ -28,7 +29,7 @@ class OutputController {
   std::vector<uint8_t> hexToBytes(const String& hex);
   dglab::WaveBlock currentWaveBlock();
   bool setStrengthV2(int channelA, int channelB);
-  bool adjustStrengthA(int value, uint8_t method);
-  bool adjustStrengthB(int value, uint8_t method);
+  dglab::RequestDisposition adjustStrengthA(int value, uint8_t method);
+  dglab::RequestDisposition adjustStrengthB(int value, uint8_t method);
   bool sendWaveV2(const String& hexA, const String& hexB);
 };

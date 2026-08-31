@@ -270,12 +270,18 @@ void WebUi::begin() {
       }
       uint8_t m = static_cast<uint8_t>(methodValue);
 
-      bool ok = output_.adjustStrength(ch, val, m);
-
-      if (ok)
-        log_.add(String("调整") + (ch == 'a' ? "A" : "B") + "强度: " + String(val) + ", 方法:" + String(m));
-      else
+      const dglab::RequestDisposition disposition =
+          output_.adjustStrength(ch, val, m);
+      if (disposition == dglab::RequestDisposition::Rejected) {
         log_.add("强度请求未发送");
+      } else if (state_.deviceType == DeviceType::DG2) {
+        log_.add(String("调整") + (ch == 'a' ? "A" : "B") + "强度: " +
+                 String(val) + ", 方法:" + String(m));
+      } else if (disposition == dglab::RequestDisposition::Queued) {
+        log_.add("强度命令已排队");
+      } else if (disposition == dglab::RequestDisposition::Prepared) {
+        log_.add("强度命令待发送");
+      }
     }
     redirectHome();
   });

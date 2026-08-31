@@ -73,41 +73,53 @@ bool OutputController::setStrengthV2(int channelA, int channelB) {
   return success;
 }
 
-bool OutputController::adjustStrengthA(int value, uint8_t method) {
-  if (!state_.deviceConnected) return false;
+dglab::RequestDisposition OutputController::adjustStrengthA(int value,
+                                                            uint8_t method) {
+  if (!state_.deviceConnected || value < 0) {
+    return dglab::RequestDisposition::Rejected;
+  }
 
   if (state_.deviceType == DeviceType::DG3) {  // 3.0
     StrengthOperation op;
     if (method == 0x04) op = StrengthOperation::Increase;
     else if (method == 0x08) op = StrengthOperation::Decrease;
     else if (method == 0x0C) op = StrengthOperation::Absolute;
-    else return false;
-    return strengthController_.requestStrength(Channel::A, op, value, millis()) != dglab::RequestDisposition::Rejected;
+    else return dglab::RequestDisposition::Rejected;
+    return strengthController_.requestStrength(Channel::A, op, value, millis());
   } else {  // 2.0
     int newA = state_.strengthA;
     if (method == 0x04) newA = min(2047, state_.strengthA + value * 7);
     else if (method == 0x08) newA = max(0, state_.strengthA - value * 7);
     else if (method == 0x0C) newA = constrain(value * 7, 0, 2047);
-    return setStrengthV2(newA, state_.strengthB);
+    else return dglab::RequestDisposition::Rejected;
+    return setStrengthV2(newA, state_.strengthB)
+               ? dglab::RequestDisposition::Prepared
+               : dglab::RequestDisposition::Rejected;
   }
 }
 
-bool OutputController::adjustStrengthB(int value, uint8_t method) {
-  if (!state_.deviceConnected) return false;
+dglab::RequestDisposition OutputController::adjustStrengthB(int value,
+                                                              uint8_t method) {
+  if (!state_.deviceConnected || value < 0) {
+    return dglab::RequestDisposition::Rejected;
+  }
 
   if (state_.deviceType == DeviceType::DG3) {  // 3.0
     StrengthOperation op;
     if (method == 0x01) op = StrengthOperation::Increase;
     else if (method == 0x02) op = StrengthOperation::Decrease;
     else if (method == 0x03) op = StrengthOperation::Absolute;
-    else return false;
-    return strengthController_.requestStrength(Channel::B, op, value, millis()) != dglab::RequestDisposition::Rejected;
+    else return dglab::RequestDisposition::Rejected;
+    return strengthController_.requestStrength(Channel::B, op, value, millis());
   } else {  // 2.0
     int newB = state_.strengthB;
     if (method == 0x01) newB = min(2047, state_.strengthB + value * 7);
     else if (method == 0x02) newB = max(0, state_.strengthB - value * 7);
     else if (method == 0x03) newB = constrain(value * 7, 0, 2047);
-    return setStrengthV2(state_.strengthA, newB);
+    else return dglab::RequestDisposition::Rejected;
+    return setStrengthV2(state_.strengthA, newB)
+               ? dglab::RequestDisposition::Prepared
+               : dglab::RequestDisposition::Rejected;
   }
 }
 
@@ -237,7 +249,12 @@ void OutputController::onStrengthResponse(const BleEvent& event) {
   log_.add("收到强度回应: 序列号=" + String(event.sequence) + ", A=" + String(state_.strengthA) + ", B=" + String(state_.strengthB));
 }
 
-bool OutputController::adjustStrength(char channel, int value, uint8_t method) {
+dglab::RequestDisposition OutputController::adjustStrength(char channel,
+                                                            int value,
+                                                            uint8_t method) {
+  if (channel != 'a' && channel != 'b') {
+    return dglab::RequestDisposition::Rejected;
+  }
   return channel == 'a' ? adjustStrengthA(value, method)
                         : adjustStrengthB(value, method);
 }

@@ -43,14 +43,13 @@ void setup() {
 }
 
 void loop() {
-  webUi.handleClient();
-
   processBleEvents();
   bool manualDisconnect = false;
   if (bleManager.handleDisconnectedClient(manualDisconnect)) {
     outputController.onDisconnected(manualDisconnect);
   }
 
+  webUi.handleClient();
   outputController.handleWaveSend();
   if (bleManager.handleAutoScan()) outputController.onConnected(false);
   delay(10);

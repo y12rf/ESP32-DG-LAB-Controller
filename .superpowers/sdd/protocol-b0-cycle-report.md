@@ -58,3 +58,13 @@ output scheduling, auto-scan, and delay.
   ```
 
 - `git diff --check` is required before commit.
+
+## Reviewer follow-up
+
+The loop now drains BLE events and deferred disconnect cleanup before serving
+Web requests, then runs the output cycle, auto-scan, and delay. Strength
+requests expose `RequestDisposition` to the Web route: rejected requests are
+logged as not sent, queued DG3 requests as queued, and prepared DG3 requests
+as waiting for the next cycle. Synchronous DG2 success keeps the existing
+adjustment log; actual DG3 transmission remains logged only by the output
+cycle after a successful B0 write.
