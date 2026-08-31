@@ -29,5 +29,6 @@ class WebUi {
   void sendError(int code, const char* error);
   static void appendJsonString(String& output, const String& value);
   static int apiDeviceType(DeviceType type);
+  static DeviceType parseApiDeviceType(int value);
   static bool parseNonNegativeInt(const String& raw, int& value);
 };

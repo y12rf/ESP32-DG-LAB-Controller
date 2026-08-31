@@ -61,6 +61,12 @@ int WebUi::apiDeviceType(DeviceType type) {
   return 0;
 }
 
+DeviceType WebUi::parseApiDeviceType(int value) {
+  if (value == 2) return DeviceType::DG2;
+  if (value == 3) return DeviceType::DG3;
+  return DeviceType::None;
+}
+
 bool WebUi::parseNonNegativeInt(const String& raw, int& value) {
   if (raw.length() == 0) return false;
   unsigned long parsed = 0;
@@ -145,101 +151,151 @@ void WebUi::begin() {
   server_.on("/api/devices", HTTP_GET, [this]() { sendDevices(); });
   server_.on("/api/logs", HTTP_GET, [this]() { sendLogs(); });
 
-  server_.on("/scan", HTTP_GET, [this]() {
+  server_.on("/api/scan", HTTP_POST, [this]() {
+    if (state_.deviceConnected || state_.scanInProgress ||
+        state_.clientCleanupPending) {
+      sendError(409, "invalid_state");
+      return;
+    }
     if (ble_.startBleScan()) output_.onConnected(false);
-    sendIndex();
+    sendOk();
   });
 
-  server_.on("/auto-connect", HTTP_GET, [this]() {
-    if (server_.hasArg("enabled")) {
-      state_.autoConnectEnabled = server_.arg("enabled").toInt() != 0;
-      log_.add(String("自动连接功能") +
-               (state_.autoConnectEnabled ? "已开启" : "已关闭"));
+  server_.on("/api/connect", HTTP_POST, [this]() {
+    if (!server_.hasArg("address") || !server_.hasArg("type") ||
+        state_.deviceConnected || state_.clientCleanupPending) {
+      sendError(state_.deviceConnected || state_.clientCleanupPending ? 409 : 400,
+                state_.deviceConnected || state_.clientCleanupPending
+                    ? "invalid_state" : "invalid_argument");
+      return;
     }
-    sendIndex();
-  });
-
-  server_.on("/connect", HTTP_GET, [this]() {
-    if (server_.hasArg("address") && server_.hasArg("type")) {
-      const DeviceType type = parseDeviceType(server_.arg("type").toInt());
-      if (type == DeviceType::None) {
-        log_.add("连接失败: 未知设备类型");
-      } else {
-        const String address = server_.arg("address");
-        const ScannedDevice* selected = nullptr;
-        for (const auto& device : ble_.scannedDevices()) {
-          if (device.address == address && device.type == type) {
-            selected = &device;
-            break;
-          }
-        }
-        if (!selected) {
-          log_.add("连接失败: 类型无效或连接错误");
-        } else {
-          output_.onManualConnectionAttempt();
-          if (!ble_.connectToDevice(address, type, selected->identity, true)) {
-            log_.add("连接失败: 类型无效或连接错误");
-          } else {
-            output_.onConnected(true);
-          }
-        }
+    int typeValue = 0;
+    if (!parseNonNegativeInt(server_.arg("type"), typeValue)) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    const DeviceType type = parseApiDeviceType(typeValue);
+    if (type == DeviceType::None) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    const String address = server_.arg("address");
+    const ScannedDevice* selected = nullptr;
+    for (const auto& device : ble_.scannedDevices()) {
+      if (device.address == address && device.type == type) {
+        selected = &device;
+        break;
       }
     }
-    sendIndex();
+    if (!selected) {
+      sendError(404, "device_not_found");
+      return;
+    }
+    output_.onManualConnectionAttempt();
+    if (!ble_.connectToDevice(address, type, selected->identity, true)) {
+      sendError(503, "ble_failure");
+      return;
+    }
+    output_.onConnected(true);
+    sendOk();
   });
 
-  server_.on("/disconnect", HTTP_GET, [this]() {
+  server_.on("/api/disconnect", HTTP_POST, [this]() {
+    if (!state_.deviceConnected) {
+      sendError(409, "invalid_state");
+      return;
+    }
     ble_.disconnectDevice();
-    sendIndex();
+    sendOk();
   });
 
-  server_.on("/start", HTTP_GET, [this]() {
-    output_.startSending();
-    sendIndex();
-  });
-
-  server_.on("/stop", HTTP_GET, [this]() {
-    output_.stopSending();
-    sendIndex();
-  });
-
-  server_.on("/wave", HTTP_GET, [this]() {
-    if (server_.hasArg("type")) output_.selectWave(server_.arg("type").charAt(0));
-    sendIndex();
-  });
-
-  server_.on("/strength", HTTP_GET, [this]() {
-    if (state_.deviceConnected && server_.hasArg("channel") &&
-        server_.hasArg("value") && server_.hasArg("method")) {
-      const char channel = server_.arg("channel").charAt(0);
-      const String rawValue = server_.arg("value");
-      const int value = rawValue.toInt();
-      const int methodValue = server_.arg("method").toInt();
-      if ((channel != 'a' && channel != 'b') || rawValue.startsWith("-") ||
-          value < 0 ||
-          (state_.deviceType == DeviceType::DG3 &&
-           (methodValue == 4 || methodValue == 8 || methodValue == 1 ||
-            methodValue == 2) &&
-           value > 200)) {
-        log_.add("强度参数无效");
-        sendIndex();
-        return;
-      }
-      const uint8_t method = static_cast<uint8_t>(methodValue);
-      const dglab::RequestDisposition disposition =
-          output_.adjustStrength(channel, value, method);
-      if (disposition == dglab::RequestDisposition::Rejected) {
-        log_.add("强度请求未发送");
-      } else if (state_.deviceType == DeviceType::DG2) {
-        log_.add(String("调整") + (channel == 'a' ? "A" : "B") +
-                 "强度: " + String(value) + ", 方法:" + String(method));
-      } else if (disposition == dglab::RequestDisposition::Queued) {
-        log_.add("强度命令已排队");
-      } else if (disposition == dglab::RequestDisposition::Prepared) {
-        log_.add("强度命令待发送");
-      }
+  server_.on("/api/auto-connect", HTTP_POST, [this]() {
+    if (!server_.hasArg("enabled")) {
+      sendError(400, "invalid_argument");
+      return;
     }
-    sendIndex();
+    int enabled = 0;
+    if (!parseNonNegativeInt(server_.arg("enabled"), enabled) || enabled > 1) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    state_.autoConnectEnabled = enabled == 1;
+    log_.add(String("自动连接功能") +
+             (state_.autoConnectEnabled ? "已开启" : "已关闭"));
+    sendOk();
+  });
+
+  server_.on("/api/output", HTTP_POST, [this]() {
+    if (!server_.hasArg("sending")) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    int sending = 0;
+    if (!parseNonNegativeInt(server_.arg("sending"), sending) || sending > 1) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    if (sending && (!state_.deviceConnected ||
+                    !state_.linkReady.load(std::memory_order_acquire))) {
+      sendError(409, "invalid_state");
+      return;
+    }
+    if (sending) output_.startSending();
+    else output_.stopSending();
+    sendOk();
+  });
+
+  server_.on("/api/wave", HTTP_POST, [this]() {
+    if (!server_.hasArg("type") || server_.arg("type").length() != 1) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    const char wave = server_.arg("type")[0];
+    if (wave != 'a' && wave != 'b' && wave != 'c') {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    output_.selectWave(wave);
+    sendOk();
+  });
+
+  server_.on("/api/strength", HTTP_POST, [this]() {
+    if (!state_.deviceConnected ||
+        !state_.linkReady.load(std::memory_order_acquire)) {
+      sendError(409, "invalid_state");
+      return;
+    }
+    if (!server_.hasArg("channel") || !server_.hasArg("value") ||
+        !server_.hasArg("method") || server_.arg("channel").length() != 1) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    const char channel = server_.arg("channel")[0];
+    int value = 0;
+    int method = 0;
+    if ((channel != 'a' && channel != 'b') ||
+        !parseNonNegativeInt(server_.arg("value"), value) ||
+        !parseNonNegativeInt(server_.arg("method"), method)) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    const bool methodValid =
+        channel == 'a' ? (method == 4 || method == 8 || method == 12)
+                       : (method == 1 || method == 2 || method == 3);
+    const int maximum = state_.deviceType == DeviceType::DG3 ? 200 : 292;
+    if (!methodValid || value > maximum) {
+      sendError(400, "invalid_argument");
+      return;
+    }
+    const dglab::RequestDisposition disposition =
+        output_.adjustStrength(channel, value, static_cast<uint8_t>(method));
+    if (disposition == dglab::RequestDisposition::Rejected) {
+      sendError(503, "ble_failure");
+      return;
+    }
+    sendOk(disposition == dglab::RequestDisposition::Queued
+               ? ",\"disposition\":\"queued\""
+               : ",\"disposition\":\"prepared\"");
   });
 
   server_.begin();

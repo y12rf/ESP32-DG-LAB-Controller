@@ -62,5 +62,30 @@ class WebUiReadApiContractTest(unittest.TestCase):
         self.assertIn("case '\"'", source)
 
 
+class WebUiActionApiContractTest(unittest.TestCase):
+    def test_actions_are_post_only(self):
+        source = read(WEB_UI_CPP)
+        for route in (
+            "/api/scan", "/api/connect", "/api/disconnect",
+            "/api/auto-connect", "/api/output", "/api/wave",
+            "/api/strength",
+        ):
+            self.assertIn(f'server_.on("{route}", HTTP_POST', source)
+
+    def test_legacy_state_changing_get_routes_are_removed(self):
+        source = read(WEB_UI_CPP)
+        for route in (
+            "/scan", "/connect", "/disconnect", "/auto-connect",
+            "/start", "/stop", "/wave", "/strength",
+        ):
+            self.assertNotIn(f'server_.on("{route}"', source)
+
+    def test_strength_response_preserves_queue_disposition(self):
+        source = read(WEB_UI_CPP)
+        self.assertIn("prepared", source)
+        self.assertIn("queued", source)
+        self.assertIn("RequestDisposition::Rejected", source)
+
+
 if __name__ == "__main__":
     unittest.main()
