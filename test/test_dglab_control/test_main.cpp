@@ -23,6 +23,17 @@ void test_disabled_wave_is_safe_marker() {
   TEST_ASSERT_EQUAL_UINT8(101, kDisabledWave.bytes[7]);
 }
 
+void test_v2_strength_decode_uses_little_endian_11_bit_channels() {
+  const uint8_t bytes[3] = {0xFF, 0xFF, 0x3F};
+  uint16_t strengthA = 0;
+  uint16_t strengthB = 0;
+
+  decodeV2Strength(bytes, strengthA, strengthB);
+
+  TEST_ASSERT_EQUAL_UINT16(2047, strengthA);
+  TEST_ASSERT_EQUAL_UINT16(2047, strengthB);
+}
+
 void test_wave_schedule_handles_rollover() {
   TEST_ASSERT_FALSE(isWaveSendDue(0xFFFFFFC0u, 0xFFFFFFC0u));
   TEST_ASSERT_TRUE(isWaveSendDue(50u, 0xFFFFFFC0u));
@@ -437,6 +448,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_b0_layout_is_exactly_twenty_bytes);
   RUN_TEST(test_disabled_wave_is_safe_marker);
+  RUN_TEST(test_v2_strength_decode_uses_little_endian_11_bit_channels);
   RUN_TEST(test_wave_schedule_handles_rollover);
   RUN_TEST(test_b0_cycle_waits_until_100ms_without_consuming_pending_strength);
   RUN_TEST(test_b0_cycle_puts_pending_strength_and_both_waves_in_one_frame);
