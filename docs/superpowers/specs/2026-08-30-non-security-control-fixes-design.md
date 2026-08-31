@@ -2,7 +2,26 @@
 
 **Date:** 2026-08-30
 
-**Status:** Approved
+**Status:** Implemented and verified in firmware build
+
+## Implementation Record
+
+The implementation was split into small ESP32-facing modules instead of leaving all adapter work in `main.cpp`:
+
+- `AppState` and `AppLog` own application state and the fixed-capacity log.
+- `BleManager` owns scanning, profile discovery, notification events, writes, and deferred client cleanup.
+- `OutputController` owns strength requests, the 100 ms output cycle, and reconnect-resume decisions.
+- `Waveforms` owns compile-time fixed byte tables copied from the official Web Bluetooth demo.
+- `WebUi` owns HTTP routes and rendering; `main.cpp` only initializes and sequences the loop.
+
+The final protocol alignment also includes behavior discovered during the official-document re-audit:
+
+- DG-LAB 2.0 `1504` is treated as read/write/notify. Its initial three-byte value and later notifications are decoded as two little-endian 11-bit strengths; predicted local writes remain unconfirmed until feedback arrives.
+- DG-LAB 3.0 emits one combined B0 per due 100 ms cycle. Strength intent is committed only after that frame is written, and BF is written after every connection.
+- BLE callbacks only update the link-alive atomic or enqueue fixed-size events. If the queue is full, a disconnect is recovered from the callback-updated atomic before client cleanup.
+- Wave tables are stored as fixed bytes, so the 100 ms path performs no hexadecimal parsing, temporary `String` slicing, or `vector` allocation.
+
+The Native environment builds only `Waveforms.cpp` from `src` in addition to the pure `DgLabControl` library. This keeps waveform rotation tests host-compatible without compiling Arduino, BLE, or Web sources.
 
 ## Goal
 
@@ -62,11 +81,11 @@ The library does not own:
 - FreeRTOS queues.
 - Scanning and connection establishment.
 
-### ESP32 adapter
+### ESP32 adapters
 
-Keep `src/main.cpp` as the hardware and Web adapter. It translates Web requests into control-library operations, supplies the current waveform when a frame is prepared, performs BLE writes, and returns B1 events to the library.
+`WebUi` translates Web requests into typed control operations, `OutputController` supplies the current waveform and owns the 100 ms schedule, and `BleManager` performs BLE writes and returns fixed-size feedback events to the loop. `main.cpp` only sequences these modules.
 
-The adapter remains responsible for DG-LAB 2.0 strength writes because that protocol does not use B0/B1 sequencing. It still uses the shared 100 ms waveform scheduler.
+`OutputController` remains responsible for DG-LAB 2.0 strength writes because that protocol does not use B0/B1 sequencing. It uses the same rollover-safe 100 ms scheduling rule for wave output.
 
 ### Host tests
 
@@ -97,18 +116,23 @@ struct B0Frame {
 };
 
 struct PreparedStrengthCommand {
-  B0Frame frame;
-  uint8_t sequence;
+  uint8_t sequenceMethod;
+  uint8_t strengthA;
+  uint8_t strengthB;
+  uint8_t targetStrengthA;
+  uint8_t targetStrengthB;
+  bool valid;
 };
 ```
 
 `StrengthController` provides these responsibilities through explicit operations:
 
-- `requestStrength(Channel, StrengthOperation, uint8_t)` records or merges an intent.
-- `prepareCommand(bool waveEnabled, const WaveBlock&, PreparedStrengthCommand&)` creates one command when no B1 is outstanding.
-- `commitPrepared(uint32_t nowMs)` marks a successfully written command as in flight.
-- `rollbackPrepared()` keeps the prepared intent pending after a failed BLE write.
-- `onStrengthResponse(uint8_t sequence, uint8_t strengthA, uint8_t strengthB)` updates confirmed state and returns whether it resolved the in-flight command.
+- `requestStrength(Channel, StrengthOperation, int, uint32_t)` records or merges an intent and returns `Rejected`, `Queued`, or `Prepared`.
+- `prepareCommand(uint32_t, PreparedStrengthCommand&)` creates one command when no B1 is outstanding.
+- `prepareB0Cycle(...)` applies the 100 ms schedule and combines the prepared strength fields with two complete waveform blocks.
+- `commitPrepared(const PreparedStrengthCommand&, uint32_t)` marks a successfully written command as in flight.
+- `rollbackPrepared(const PreparedStrengthCommand&)` keeps the prepared intent pending after a failed BLE write.
+- `onStrengthResponse(uint8_t sequence, uint8_t strengthA, uint8_t strengthB, uint32_t)` updates confirmed state and returns whether it resolved the in-flight command.
 - `tick(uint32_t nowMs)` returns whether it expired an in-flight command after 500 ms, without requeuing or retrying that command.
 - `resetConnection()` clears prepared, in-flight, and pending intents and marks strength feedback unsynchronized after a disconnect.
 - `isWaveSendDue(uint32_t nowMs, uint32_t lastSendMs)` applies the rollover-safe 100 ms scheduling rule.
@@ -192,7 +216,7 @@ ESP32 BLE Arduino 2.0.0 exposes `registerForNotify()` as a `void` API, so regist
 
 ## BLE Callback Concurrency
 
-Create a fixed-capacity FreeRTOS queue in `main.cpp` for client events. Events contain only fixed-size scalar data: event kind, client identity, B1 sequence, and A/B strengths.
+Create a fixed-capacity FreeRTOS queue in `BleManager` for client events. Events contain only fixed-size scalar data: event kind, B1 sequence, and A/B strengths.
 
 BLE notify and client callbacks may only enqueue events and update a small atomic link-alive flag. They must not call `addLog()`, modify Arduino `String` objects, delete clients, or mutate the control state machine.
 

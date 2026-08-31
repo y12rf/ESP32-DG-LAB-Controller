@@ -1,5 +1,8 @@
-Agent.md
+AGENTS.md
 build/
 docs/
 .pio/
+.piohome*/
+.pushgit/
+.superpowers/
 .vscode/
