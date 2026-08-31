@@ -23,6 +23,8 @@ void processBleEvents() {
   while (bleManager.pollEvent(event)) {
     if (event.type == BleEventType::StrengthResponse) {
       outputController.onStrengthResponse(event);
+    } else if (event.type == BleEventType::V2StrengthFeedback) {
+      outputController.onV2StrengthFeedback(event);
     } else {
       bleManager.handleDisconnectEvent();
     }

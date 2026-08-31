@@ -75,6 +75,7 @@ bool OutputController::setStrengthV2(int channelA, int channelB) {
   if (success) {
     state_.strengthA = channelA;
     state_.strengthB = channelB;
+    state_.strengthConfirmed = false;
     log_.add("设置2.0强度: A=" + String(channelA) + ", B=" + String(channelB));
   } else {
     log_.add("设置2.0强度失败");
@@ -214,7 +215,9 @@ void OutputController::onConnected(bool manualSelection) {
     state_.strengthA = 0;
     state_.strengthB = 0;
   }
-  state_.strengthConfirmed = (state_.deviceType == DeviceType::DG2);
+  if (state_.deviceType == DeviceType::DG3) {
+    state_.strengthConfirmed = false;
+  }
   if (state_.connectedIdentityValid) resumePolicy_.remember(state_.connectedIdentity);
   if (manualSelection) {
     state_.desiredSending = false;
@@ -249,13 +252,23 @@ void OutputController::onDisconnected(bool manualDisconnect) {
 }
 
 void OutputController::onStrengthResponse(const BleEvent& event) {
-  strengthController_.onStrengthResponse(event.sequence, event.strengthA, event.strengthB, millis());
+  strengthController_.onStrengthResponse(
+      event.sequence, static_cast<uint8_t>(event.strengthA),
+      static_cast<uint8_t>(event.strengthB), millis());
   state_.strengthA = strengthController_.strengthA();
   state_.strengthB = strengthController_.strengthB();
   state_.strengthConfirmed = strengthController_.feedbackSynchronized();
   state_.waitingForResponse = strengthController_.waitingForResponse();
   state_.isInputAllowed = !state_.waitingForResponse;
   log_.add("收到强度回应: 序列号=" + String(event.sequence) + ", A=" + String(state_.strengthA) + ", B=" + String(state_.strengthB));
+}
+
+void OutputController::onV2StrengthFeedback(const BleEvent& event) {
+  state_.strengthA = event.strengthA;
+  state_.strengthB = event.strengthB;
+  state_.strengthConfirmed = true;
+  log_.add("收到2.0强度通知: A=" + String(state_.strengthA) +
+           ", B=" + String(state_.strengthB));
 }
 
 dglab::RequestDisposition OutputController::adjustStrength(char channel,

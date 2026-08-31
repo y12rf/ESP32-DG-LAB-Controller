@@ -41,8 +41,9 @@ String WebUi::makeHtml() {
       html += "<p>通道A强度: " + String(state_.strengthA) + "/200" + (state_.strengthConfirmed ? "" : "（未确认）") + "</p>";
       html += "<p>通道B强度: " + String(state_.strengthB) + "/200" + (state_.strengthConfirmed ? "" : "（未确认）") + "</p>";
     } else {
-      html += "<p>通道A强度: " + String(state_.strengthA / 7) + " (原:" + String(state_.strengthA) + ")</p>";
-      html += "<p>通道B强度: " + String(state_.strengthB / 7) + " (原:" + String(state_.strengthB) + ")</p>";
+      const String confirmation = state_.strengthConfirmed ? "" : "（未确认）";
+      html += "<p>通道A强度: " + String(state_.strengthA / 7) + " (原:" + String(state_.strengthA) + ")" + confirmation + "</p>";
+      html += "<p>通道B强度: " + String(state_.strengthB / 7) + " (原:" + String(state_.strengthB) + ")" + confirmation + "</p>";
     }
     html += "<a class='btn btn-danger' href='/disconnect'>断开连接</a>";
   } else {
@@ -65,7 +66,7 @@ String WebUi::makeHtml() {
       s += (ch == 'a' ? 'A' : 'B');
       s += "</h3><div class='strength-display'>";
       s += String(state_.deviceType == DeviceType::DG2 ? strength / 7 : strength);
-      if (state_.deviceType == DeviceType::DG3 && !state_.strengthConfirmed) s += "（未确认）";
+      if (!state_.strengthConfirmed) s += "（未确认）";
       s += "</div><div>";
       bool isA = (ch == 'a');
       s += "<a class='btn btn-primary ctrl-btn' href='/strength?channel=";

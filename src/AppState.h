@@ -39,13 +39,17 @@ struct ScannedDevice {
   dglab::DeviceIdentity identity;
 };
 
-enum class BleEventType : uint8_t { StrengthResponse, Disconnected };
+enum class BleEventType : uint8_t {
+  StrengthResponse,
+  V2StrengthFeedback,
+  Disconnected
+};
 
 struct BleEvent {
   BleEventType type;
   uint8_t sequence;
-  uint8_t strengthA;
-  uint8_t strengthB;
+  uint16_t strengthA;
+  uint16_t strengthB;
 };
 
 struct AppState {

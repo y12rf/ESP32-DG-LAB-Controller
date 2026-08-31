@@ -18,6 +18,14 @@ void encodeB0(uint8_t channel, uint8_t sequenceMethod, uint8_t strengthA,
   memcpy(out.bytes + 12, waveB.bytes, kWaveBlockSize);
 }
 
+void decodeV2Strength(const uint8_t (&bytes)[3], uint16_t& strengthA,
+                      uint16_t& strengthB) {
+  const uint32_t data = (static_cast<uint32_t>(bytes[2]) << 16) |
+                        (static_cast<uint32_t>(bytes[1]) << 8) | bytes[0];
+  strengthA = static_cast<uint16_t>((data >> 11) & 0x7FF);
+  strengthB = static_cast<uint16_t>(data & 0x7FF);
+}
+
 bool isWaveSendDue(uint32_t now, uint32_t lastSend) {
   return static_cast<uint32_t>(now - lastSend) >= kWaveIntervalMs;
 }

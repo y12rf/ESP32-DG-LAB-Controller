@@ -68,7 +68,8 @@ class BleManager {
                   const uint8_t* data, size_t length);
   static void notifyCallback(BLERemoteCharacteristic*, uint8_t* data,
                              size_t length, bool isNotify);
-  void handleNotification(uint8_t* data, size_t length, bool isNotify);
+  void handleNotification(BLERemoteCharacteristic* characteristic,
+                          uint8_t* data, size_t length, bool isNotify);
   bool autoConnectNearestDevice();
   dglab::DeviceIdentity makeIdentity(BLEAddress address, uint8_t addressType);
 };

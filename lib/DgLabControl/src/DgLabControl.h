@@ -24,6 +24,9 @@ void encodeB0(uint8_t channel, uint8_t sequenceMethod, uint8_t strengthA,
               uint8_t strengthB, const WaveBlock& waveA,
               const WaveBlock& waveB, B0Frame& out);
 
+void decodeV2Strength(const uint8_t (&bytes)[3], uint16_t& strengthA,
+                     uint16_t& strengthB);
+
 bool isWaveSendDue(uint32_t now, uint32_t lastSend);
 
 enum class Channel : uint8_t { A = 0, B = 1 };

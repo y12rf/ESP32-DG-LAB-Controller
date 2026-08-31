@@ -12,6 +12,7 @@ class OutputController {
   void onManualConnectionAttempt();
   void onConnected(bool manualSelection);
   void onDisconnected(bool manualDisconnect);
+  void onV2StrengthFeedback(const BleEvent& event);
   void onStrengthResponse(const BleEvent& event);
   dglab::RequestDisposition adjustStrength(char channel, int value,
                                            uint8_t method);

@@ -88,14 +88,31 @@ void BleManager::ClientCallbacks::onDisconnect(BLEClient*) {
   owner_.enqueueEvent({BleEventType::Disconnected, 0, 0, 0});
 }
 
-void BleManager::notifyCallback(BLERemoteCharacteristic*, uint8_t* data,
+void BleManager::notifyCallback(BLERemoteCharacteristic* characteristic,
+                                uint8_t* data,
                                 size_t length, bool isNotify) {
-  if (notifyOwner_) notifyOwner_->handleNotification(data, length, isNotify);
+  if (notifyOwner_) {
+    notifyOwner_->handleNotification(characteristic, data, length, isNotify);
+  }
 }
 
-void BleManager::handleNotification(uint8_t* data, size_t length, bool isNotify) {
-  if (!isNotify || length < 4) return;
-  if (data[0] != 0xB1) return;
+void BleManager::handleNotification(BLERemoteCharacteristic* characteristic,
+                                    uint8_t* data, size_t length,
+                                    bool isNotify) {
+  if (!isNotify) return;
+  if (characteristic == characteristicPwmAB2_) {
+    if (length < 3) return;
+    uint8_t bytes[3] = {data[0], data[1], data[2]};
+    uint16_t strengthA = 0;
+    uint16_t strengthB = 0;
+    dglab::decodeV2Strength(bytes, strengthA, strengthB);
+    enqueueEvent({BleEventType::V2StrengthFeedback, 0, strengthA, strengthB});
+    return;
+  }
+  if (characteristic != characteristicNotify3_ || length < 4 ||
+      data[0] != 0xB1) {
+    return;
+  }
   enqueueEvent({BleEventType::StrengthResponse, data[1], data[2], data[3]});
 }
 
@@ -195,10 +212,12 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
   // use the link-alive fallback during discovery failure as well.
   state_.deviceConnected.store(true, std::memory_order_release);
   state_.bleLinkAlive.store(true, std::memory_order_release);
+  state_.strengthConfirmed = false;
 
   log_.add("连接成功，MTU=517");
   client_->setMTU(517);
   bool ok = false;
+  bool initialStrengthConfirmed = false;
 
   auto getServiceWithRetry = [&](const BLEUUID& uuid) -> BLERemoteService* {
     BLERemoteService* service = nullptr;
@@ -219,16 +238,21 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
       ok = characteristicA2_ && characteristicB2_ && characteristicPwmAB2_ &&
            (characteristicA2_->canWrite() || characteristicA2_->canWriteNoResponse()) &&
            (characteristicB2_->canWrite() || characteristicB2_->canWriteNoResponse()) &&
+           characteristicPwmAB2_->canRead() && characteristicPwmAB2_->canNotify() &&
            (characteristicPwmAB2_->canWrite() || characteristicPwmAB2_->canWriteNoResponse());
-      if (characteristicPwmAB2_ && characteristicPwmAB2_->canRead()) {
+      if (ok) {
+        characteristicPwmAB2_->registerForNotify(notifyCallback);
         auto value = characteristicPwmAB2_->readValue();
         if (value.length() >= 3) {
-          uint8_t valueBytes[3] = {
+          const uint8_t valueBytes[3] = {
             static_cast<uint8_t>(value[0]), static_cast<uint8_t>(value[1]), static_cast<uint8_t>(value[2])
           };
-          uint32_t data = (valueBytes[2] << 16) | (valueBytes[1] << 8) | valueBytes[0];
-          state_.strengthA = (data >> 11) & 0x7FF;
-          state_.strengthB = data & 0x7FF;
+          uint16_t strengthA = 0;
+          uint16_t strengthB = 0;
+          dglab::decodeV2Strength(valueBytes, strengthA, strengthB);
+          state_.strengthA = strengthA;
+          state_.strengthB = strengthB;
+          initialStrengthConfirmed = true;
           log_.add("获取当前强度: A=" + String(state_.strengthA) + ", B=" + String(state_.strengthB));
         }
       }
@@ -263,6 +287,7 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
   state_.deviceType = type;
   state_.resumeDeviceType = type;
   state_.linkReady.store(true, std::memory_order_release);
+  state_.strengthConfirmed = type == DeviceType::DG2 && initialStrengthConfirmed;
   for (auto& d : scannedDevices_)
     if (d.address == address) state_.connectedDeviceName = d.name;
   state_.connectedDeviceAddress = address;
