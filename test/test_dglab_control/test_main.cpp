@@ -1,7 +1,38 @@
 #include <unity.h>
 #include <DgLabControl.h>
+#include "../../src/Waveforms.h"
 
 using namespace dglab;
+
+void test_builtin_v2_wave_tables_keep_sizes_and_rotation() {
+  const waveforms::V2WaveBlock& first = waveforms::currentV2('a', 0);
+  const waveforms::V2WaveBlock& wrapped = waveforms::currentV2('a', 12);
+  const waveforms::V2WaveBlock& last = waveforms::currentV2('a', 11);
+
+  TEST_ASSERT_EQUAL_UINT8(0x21, first.bytes[0]);
+  TEST_ASSERT_EQUAL_UINT8(0x01, first.bytes[1]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, first.bytes[2]);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(first.bytes, wrapped.bytes, 3);
+  TEST_ASSERT_EQUAL_UINT8(0x00, last.bytes[0]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, last.bytes[1]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, last.bytes[2]);
+}
+
+void test_builtin_v3_wave_tables_keep_bytes_and_invalid_wave_fallback() {
+  const WaveBlock& first = waveforms::currentV3('a', 0);
+  const WaveBlock& last = waveforms::currentV3('a', 11);
+  const WaveBlock& wrapped = waveforms::currentV3('a', 12);
+  const WaveBlock& invalid = waveforms::currentV3('x', 0);
+
+  TEST_ASSERT_EQUAL_UINT8(0x0A, first.bytes[0]);
+  TEST_ASSERT_EQUAL_UINT8(0x0A, first.bytes[3]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, first.bytes[4]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, first.bytes[7]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, last.bytes[4]);
+  TEST_ASSERT_EQUAL_UINT8(0x00, last.bytes[7]);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(first.bytes, wrapped.bytes, 8);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kDisabledWave.bytes, invalid.bytes, 8);
+}
 
 static void synchronize_at_100(StrengthController& controller);
 
@@ -446,6 +477,8 @@ void test_resume_requires_exact_identity() {
 
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_builtin_v2_wave_tables_keep_sizes_and_rotation);
+  RUN_TEST(test_builtin_v3_wave_tables_keep_bytes_and_invalid_wave_fallback);
   RUN_TEST(test_b0_layout_is_exactly_twenty_bytes);
   RUN_TEST(test_disabled_wave_is_safe_marker);
   RUN_TEST(test_v2_strength_decode_uses_little_endian_11_bit_channels);

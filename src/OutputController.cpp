@@ -1,9 +1,5 @@
 #include "OutputController.h"
 
-#include "Waveforms.h"
-#include <algorithm>
-#include <cstdlib>
-
 using dglab::B0Frame;
 using dglab::Channel;
 using dglab::PreparedStrengthCommand;
@@ -20,35 +16,11 @@ void OutputController::onManualConnectionAttempt() {
   state_.isSending = false;
 }
 
-std::vector<uint8_t> OutputController::hexToBytes(const String& hex) {
-  std::vector<uint8_t> v;
-  if (hex.length() % 2 != 0) {
-    log_.add("hexToBytes: 无效长度 " + hex);
-    return v;
-  }
-
-  for (size_t i = 0; i < hex.length(); i += 2) {
-    String part = hex.substring(i, i + 2);
-    char* endPtr = nullptr;
-    long value = strtol(part.c_str(), &endPtr, 16);
-    if (endPtr == nullptr || *endPtr != '\0' || value < 0 || value > 0xFF) {
-      log_.add("hexToBytes: 无效数据 " + part);
-      v.clear();
-      return v;
-    }
-    v.push_back(static_cast<uint8_t>(value));
-  }
-  return v;
-}
-
-bool OutputController::sendWaveV2(const String& hexA, const String& hexB) {
+bool OutputController::sendWaveV2(const waveforms::V2WaveBlock& wave) {
   if (!state_.deviceConnected || state_.deviceType != DeviceType::DG2) return false;
 
-  std::vector<uint8_t> bytesA = hexToBytes(hexA);
-  if (hexA.length() > 0 && bytesA.empty()) return false;
-  std::vector<uint8_t> bytesB = hexToBytes(hexB);
-  if (hexB.length() > 0 && bytesB.empty()) return false;
-  const bool success = ble_.writeV2WaveBytes(bytesA, bytesB);
+  const bool success = ble_.writeV2WaveBytes(
+      wave.bytes, sizeof(wave.bytes), wave.bytes, sizeof(wave.bytes));
   if (!success) ble_.handleTransportFailure();
   return success;
 }
@@ -135,12 +107,7 @@ dglab::RequestDisposition OutputController::adjustStrengthB(int value,
 }
 
 dglab::WaveBlock OutputController::currentWaveBlock() {
-  WaveBlock block = {{10, 10, 10, 10, 0, 0, 0, 101}};
-  const char* current = waveforms::current(state_.deviceType, state_.selectedWave,
-                                            state_.waveIndex);
-  std::vector<uint8_t> bytes = hexToBytes(String(current));
-  if (bytes.size() >= 8) std::copy(bytes.begin(), bytes.begin() + 8, block.bytes);
-  return block;
+  return waveforms::currentV3(state_.selectedWave, state_.waveIndex);
 }
 
 void OutputController::handleWaveSend() {
@@ -159,9 +126,9 @@ void OutputController::handleWaveSend() {
   if (state_.deviceType == DeviceType::DG2) {
     if (!state_.isSending || !dglab::isWaveSendDue(now, state_.lastSendTime)) return;
     state_.lastSendTime = now;
-    const char* data = waveforms::current(state_.deviceType, state_.selectedWave,
-                                           state_.waveIndex);
-    if (!sendWaveV2(data, data)) {
+    const waveforms::V2WaveBlock& wave =
+        waveforms::currentV2(state_.selectedWave, state_.waveIndex);
+    if (!sendWaveV2(wave)) {
       state_.isSending = false;
       log_.add("波形发送失败");
     } else if (state_.waveIndex % 100 == 0) {

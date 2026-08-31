@@ -3,8 +3,8 @@
 #include "AppLog.h"
 #include "AppState.h"
 #include "BleManager.h"
+#include "Waveforms.h"
 #include <DgLabControl.h>
-#include <vector>
 
 class OutputController {
  public:
@@ -28,10 +28,9 @@ class OutputController {
   dglab::StrengthController strengthController_;
   dglab::ResumePolicy resumePolicy_;
 
-  std::vector<uint8_t> hexToBytes(const String& hex);
   dglab::WaveBlock currentWaveBlock();
   bool setStrengthV2(int channelA, int channelB);
   dglab::RequestDisposition adjustStrengthA(int value, uint8_t method);
   dglab::RequestDisposition adjustStrengthB(int value, uint8_t method);
-  bool sendWaveV2(const String& hexA, const String& hexB);
+  bool sendWaveV2(const waveforms::V2WaveBlock& wave);
 };

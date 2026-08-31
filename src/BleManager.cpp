@@ -366,10 +366,10 @@ bool BleManager::writeBytes(BLERemoteCharacteristic* characteristic,
 #endif
 }
 
-bool BleManager::writeV2WaveBytes(const std::vector<uint8_t>& bytesA,
-                                  const std::vector<uint8_t>& bytesB) {
-  return writeBytes(characteristicA2_, bytesA.data(), bytesA.size()) &&
-         writeBytes(characteristicB2_, bytesB.data(), bytesB.size());
+bool BleManager::writeV2WaveBytes(const uint8_t* bytesA, size_t lengthA,
+                                  const uint8_t* bytesB, size_t lengthB) {
+  return writeBytes(characteristicA2_, bytesA, lengthA) &&
+         writeBytes(characteristicB2_, bytesB, lengthB);
 }
 
 bool BleManager::writeV2StrengthBytes(const uint8_t (&bytes)[3]) {

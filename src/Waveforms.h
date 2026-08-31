@@ -1,7 +1,16 @@
 #pragma once
 
-#include "AppState.h"
+#include <stdint.h>
+
+#include <DgLabControl.h>
 
 namespace waveforms {
-const char* current(DeviceType deviceType, char selectedWave, int waveIndex);
+
+struct V2WaveBlock {
+  uint8_t bytes[3];
+};
+
+const V2WaveBlock& currentV2(char selectedWave, int waveIndex);
+const dglab::WaveBlock& currentV3(char selectedWave, int waveIndex);
+
 }
