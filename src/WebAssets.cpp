@@ -79,19 +79,24 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
   <script>
   (()=>{'use strict';
   const STATUS_INTERVAL_MS=1000,LOG_INTERVAL_MS=2000;
-  const state={status:null,tab:'status',scanRevision:null,statusInFlight:false,actionInFlight:false};
-  let statusTimer=0,logTimer=0;
+  const state={status:null,tab:'status',scanRevision:null,statusInFlight:false,logInFlight:false,devicesInFlight:false,actionInFlight:false};
+  let statusTimer=0,logTimer=0,requestTail=Promise.resolve();
   const byId=id=>document.getElementById(id);
   const pages=[...document.querySelectorAll('[data-page]')];
   const tabs=[...document.querySelectorAll('[data-tab]')];
   const setText=(id,value)=>{byId(id).textContent=String(value)};
   const form=data=>new URLSearchParams(data);
 
-  async function request(path,options={}){
-    const response=await fetch(path,{cache:'no-store',...options});
-    const payload=await response.json();
-    if(!response.ok||payload.ok===false)throw new Error(payload.error||'request_failed');
-    return payload;
+  function request(path,options={}){
+    const perform=async()=>{
+      const response=await fetch(path,{cache:'no-store',...options});
+      const payload=await response.json();
+      if(!response.ok||payload.ok===false)throw new Error(payload.error||'request_failed');
+      return payload;
+    };
+    const pending=requestTail.then(perform,perform);
+    requestTail=pending.then(()=>undefined,()=>undefined);
+    return pending;
   }
 
   function errorText(error){
@@ -136,7 +141,8 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
   }
 
   async function refreshDevices(){
-    if(document.hidden||state.status?.connected)return;
+    if(document.hidden||state.tab!=='status'||state.status?.connected||state.devicesInFlight)return;
+    state.devicesInFlight=true;
     try{
       const payload=await request('/api/devices');
       const list=byId('device-list');list.replaceChildren();
@@ -148,15 +154,18 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
         list.appendChild(button);
       });
     }catch(error){setText('controller-state',errorText(error))}
+    finally{state.devicesInFlight=false}
   }
 
   async function refreshLogs(){
-    if(document.hidden||state.tab!=='logs')return;
+    if(document.hidden||state.tab!=='logs'||state.logInFlight)return;
+    state.logInFlight=true;
     try{
       const payload=await request('/api/logs');
       const list=byId('log-list');list.replaceChildren();
       payload.logs.forEach(text=>{const row=document.createElement('p');row.textContent=text;list.appendChild(row)});
     }catch(error){setText('controller-state',errorText(error))}
+    finally{state.logInFlight=false}
   }
 
   async function postAction(path,data,button){
@@ -178,6 +187,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
     tabs.forEach(button=>button.classList.toggle('active',button.dataset.tab===tab));
     stopLogTimer();
     if(tab==='logs'){refreshLogs();logTimer=setInterval(refreshLogs,LOG_INTERVAL_MS)}
+    else if(state.status&&!state.status.connected)refreshDevices();
   }
   function stopStatusTimer(){if(statusTimer){clearInterval(statusTimer);statusTimer=0}}
   function stopLogTimer(){if(logTimer){clearInterval(logTimer);logTimer=0}}
@@ -209,7 +219,6 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
     button.textContent='扫描中';
     await postAction('/api/scan',{},button);
     button.textContent=previous;
-    await refreshDevices();
   });
   byId('disconnect-button').addEventListener('click',event=>postAction('/api/disconnect',{},event.currentTarget));
   byId('auto-connect-button').addEventListener('click',event=>postAction('/api/auto-connect',{enabled:state.status?.autoConnect?0:1},event.currentTarget));

@@ -86,25 +86,29 @@ void WebUi::sendIndex() {
 }
 
 void WebUi::sendStatus() {
+  const bool connected =
+      state_.deviceConnected.load(std::memory_order_acquire);
+  const bool ready =
+      connected && state_.linkReady.load(std::memory_order_acquire);
   String payload;
   payload.reserve(320);
   payload = F("{\"connected\":");
-  payload += state_.deviceConnected ? F("true") : F("false");
+  payload += connected ? F("true") : F("false");
   payload += F(",\"ready\":");
-  payload += state_.linkReady.load(std::memory_order_acquire) ? F("true") : F("false");
+  payload += ready ? F("true") : F("false");
   payload += F(",\"type\":");
-  payload += apiDeviceType(state_.deviceType);
+  payload += apiDeviceType(connected ? state_.deviceType : DeviceType::None);
   payload += F(",\"name\":");
-  appendJsonString(payload, state_.deviceConnected ? state_.connectedDeviceName : String());
-  payload += F(",\"strengthA\":"); payload += state_.deviceConnected ? state_.strengthA : 0;
-  payload += F(",\"strengthB\":"); payload += state_.deviceConnected ? state_.strengthB : 0;
+  appendJsonString(payload, connected ? state_.connectedDeviceName : String());
+  payload += F(",\"strengthA\":"); payload += connected ? state_.strengthA : 0;
+  payload += F(",\"strengthB\":"); payload += connected ? state_.strengthB : 0;
   payload += F(",\"confirmed\":");
-  payload += state_.deviceConnected && state_.strengthConfirmed ? F("true") : F("false");
+  payload += connected && state_.strengthConfirmed ? F("true") : F("false");
   payload += F(",\"waiting\":");
-  payload += state_.deviceConnected && state_.waitingForResponse ? F("true") : F("false");
+  payload += connected && state_.waitingForResponse ? F("true") : F("false");
   payload += F(",\"wave\":\""); payload += state_.selectedWave; payload += '"';
   payload += F(",\"sending\":");
-  payload += state_.deviceConnected && state_.isSending ? F("true") : F("false");
+  payload += connected && state_.isSending ? F("true") : F("false");
   payload += F(",\"autoConnect\":");
   payload += state_.autoConnectEnabled ? F("true") : F("false");
   payload += F(",\"scanRevision\":"); payload += state_.lastScanFinished;

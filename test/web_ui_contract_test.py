@@ -54,6 +54,15 @@ class WebUiReadApiContractTest(unittest.TestCase):
         ):
             self.assertIn(f'\\"{field}\\"', source)
 
+    def test_disconnected_status_does_not_expose_stale_link_state(self):
+        source = read(WEB_UI_CPP)
+        self.assertIn("const bool connected =", source)
+        self.assertIn("connected && state_.linkReady.load", source)
+        self.assertIn(
+            "apiDeviceType(connected ? state_.deviceType : DeviceType::None)",
+            source,
+        )
+
     def test_json_strings_are_escaped(self):
         header = read(WEB_UI_H)
         source = read(WEB_UI_CPP)
@@ -104,6 +113,24 @@ class WebUiBrowserContractTest(unittest.TestCase):
         self.assertIn("statusInFlight", source)
         self.assertIn("visibilitychange", source)
         self.assertIn("document.hidden", source)
+
+    def test_read_requests_are_serialized_without_duplicate_scan_refresh(self):
+        source = read(ASSETS_CPP)
+        self.assertIn("requestTail=Promise.resolve()", source)
+        self.assertIn("requestTail=pending.then", source)
+        self.assertIn("logInFlight", source)
+        self.assertIn("devicesInFlight", source)
+        scan_handler = source.split("byId('scan-button')", 1)[1].split(
+            "byId('disconnect-button')", 1
+        )[0]
+        self.assertNotIn("refreshDevices", scan_handler)
+
+    def test_devices_are_loaded_only_for_visible_status_page(self):
+        source = read(ASSETS_CPP)
+        devices = source.split("async function refreshDevices()", 1)[1].split(
+            "async function refreshLogs()", 1
+        )[0]
+        self.assertIn("state.tab!=='status'", devices)
 
     def test_safe_dom_updates_and_form_posts(self):
         source = read(ASSETS_CPP)
