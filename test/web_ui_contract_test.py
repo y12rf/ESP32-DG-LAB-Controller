@@ -30,5 +30,37 @@ class WebUiAssetContractTest(unittest.TestCase):
         self.assertNotIn("innerHTML", source)
 
 
+class WebUiReadApiContractTest(unittest.TestCase):
+    def test_root_and_read_routes_have_fixed_methods(self):
+        source = read(WEB_UI_CPP)
+        for route in ("/", "/api/status", "/api/devices", "/api/logs"):
+            self.assertIn(f'server_.on("{route}", HTTP_GET', source)
+        self.assertIn("send_P", source)
+        self.assertIn("web_assets::kIndexHtml", source)
+
+    def test_dynamic_full_page_rendering_is_removed(self):
+        header = read(WEB_UI_H)
+        source = read(WEB_UI_CPP)
+        self.assertNotIn("makeHtml", header + source)
+        self.assertNotIn("redirectHome", header + source)
+        self.assertNotIn("meta http-equiv", source.lower())
+
+    def test_status_contract_fields_are_present(self):
+        source = read(WEB_UI_CPP)
+        for field in (
+            "connected", "ready", "type", "name", "strengthA",
+            "strengthB", "confirmed", "waiting", "wave", "sending",
+            "autoConnect", "scanRevision",
+        ):
+            self.assertIn(f'\\"{field}\\"', source)
+
+    def test_json_strings_are_escaped(self):
+        header = read(WEB_UI_H)
+        source = read(WEB_UI_CPP)
+        self.assertIn("appendJsonString", header + source)
+        self.assertIn("case '\\\\'", source)
+        self.assertIn("case '\"'", source)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,14 @@ class WebUi {
   OutputController& output_;
   WebServer server_{80};
 
-  String makeHtml();
-  void redirectHome();
+  void sendIndex();
+  void sendStatus();
+  void sendDevices();
+  void sendLogs();
+  void sendJson(int code, const String& payload);
+  void sendOk(const char* extra = nullptr);
+  void sendError(int code, const char* error);
+  static void appendJsonString(String& output, const String& value);
+  static int apiDeviceType(DeviceType type);
+  static bool parseNonNegativeInt(const String& raw, int& value);
 };
