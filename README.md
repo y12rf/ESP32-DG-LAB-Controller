@@ -10,6 +10,8 @@
 - **波形控制**：选择并发送预定义的波形到设备的 A/B 通道。
 - **强度调整**：支持 A/B 通道相对增加、相对减少和绝对设置。
 - **强度反馈**：2.0 订阅 `1504` 强度通知；3.0 使用 B1 序列反馈，并在反馈超时时标记为未确认。
+- **轻量 Web 控制页**：页面从 Flash 一次加载，状态通过每秒一次的小型 JSON 请求局部更新；页面位于后台时停止轮询。
+- **手机端分页布局**：状态、控制和日志分开显示，强度使用明确的离散步进按钮，不使用易误触的滑杆。
 
 断线恢复：意外断开时会保留发送意图，并仅在重新连接到相同 BLE 地址及地址类型的设备后恢复波形。手动断开或手动选择另一台设备时，发送状态保持停止，需要在界面中重新点击“开始发送”。
 
@@ -25,7 +27,7 @@
 - `lib/DgLabControl`：不依赖 Arduino/BLE 的协议编码、强度状态机、周期组帧和同设备恢复策略。
 - `src/BleManager.*`：扫描、profile 建立、通知事件和 BLE client 生命周期。
 - `src/OutputController.*`：V2/V3 输出调度、强度请求和连接恢复协调。
-- `src/WebUi.*`：HTTP 路由和页面渲染。
+- `src/WebUi.*`、`src/WebAssets.*`：JSON API 和 Flash 中的静态单页控制界面。
 - `src/Waveforms.*`：与官方演示一致的内置波形表。
 - `src/AppState.*`、`src/AppLog.*`：应用状态和固定容量日志。
 - `src/main.cpp`：初始化及主循环编排。
@@ -74,14 +76,15 @@
 
 ### 测试
 
-纯协议和状态机测试使用 PlatformIO Native 环境：
+WebUi 契约、纯协议状态机和 ESP32 固件分别使用以下命令验证：
 
 ```bash
+python test/web_ui_contract_test.py
 pio test -e native
 pio run -e esp32dev
 ```
 
-GitHub Actions 会依次运行 Native 测试和 ESP32 固件构建。本机运行 Native 测试需要系统中可用的 `gcc` / `g++`。
+SPA 不增加运行时依赖，V2/V3 BLE 协议和输出行为保持不变。GitHub Actions 会依次运行 WebUi 契约、Native 测试和 ESP32 固件构建。本机运行 Native 测试需要系统中可用的 `gcc` / `g++`。
 
 ---
 

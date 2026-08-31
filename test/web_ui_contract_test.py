@@ -119,5 +119,21 @@ class WebUiBrowserContractTest(unittest.TestCase):
         self.assertNotIn('type="range"', source)
 
 
+class WebUiIntegrationContractTest(unittest.TestCase):
+    def test_due_output_runs_before_http_client(self):
+        source = read(MAIN_CPP)
+        output_at = source.index("outputController.handleWaveSend();")
+        web_at = source.index("webUi.handleClient();")
+        self.assertLess(output_at, web_at)
+
+    def test_ci_runs_web_contract_before_platformio(self):
+        workflow = read(ROOT / ".github" / "workflows" / "platformio.yml")
+        contract_at = workflow.index("python test/web_ui_contract_test.py")
+        native_at = workflow.index("pio test -e native")
+        firmware_at = workflow.index("pio run -e esp32dev")
+        self.assertLess(contract_at, native_at)
+        self.assertLess(contract_at, firmware_at)
+
+
 if __name__ == "__main__":
     unittest.main()

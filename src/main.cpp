@@ -55,8 +55,8 @@ void loop() {
     outputController.onDisconnected(manualDisconnect);
   }
 
-  webUi.handleClient();
   outputController.handleWaveSend();
+  webUi.handleClient();
   if (bleManager.handleAutoScan()) outputController.onConnected(false);
   delay(10);
 }
