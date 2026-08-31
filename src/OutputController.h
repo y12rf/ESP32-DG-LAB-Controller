@@ -9,6 +9,7 @@
 class OutputController {
  public:
   OutputController(AppState& state, AppLog& log, BleManager& ble);
+  void onManualConnectionAttempt();
   void onConnected(bool manualSelection);
   void onDisconnected(bool manualDisconnect);
   void onStrengthResponse(const BleEvent& event);

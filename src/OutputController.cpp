@@ -13,6 +13,13 @@ using dglab::WaveBlock;
 OutputController::OutputController(AppState& state, AppLog& log, BleManager& ble)
     : state_(state), log_(log), ble_(ble) {}
 
+void OutputController::onManualConnectionAttempt() {
+  resumePolicy_.clearIdentity();
+  resumePolicy_.setDesiredSending(false);
+  state_.desiredSending = false;
+  state_.isSending = false;
+}
+
 std::vector<uint8_t> OutputController::hexToBytes(const String& hex) {
   std::vector<uint8_t> v;
   if (hex.length() % 2 != 0) {
@@ -41,7 +48,9 @@ bool OutputController::sendWaveV2(const String& hexA, const String& hexB) {
   if (hexA.length() > 0 && bytesA.empty()) return false;
   std::vector<uint8_t> bytesB = hexToBytes(hexB);
   if (hexB.length() > 0 && bytesB.empty()) return false;
-  return ble_.writeV2WaveBytes(bytesA, bytesB);
+  const bool success = ble_.writeV2WaveBytes(bytesA, bytesB);
+  if (!success) ble_.handleTransportFailure();
+  return success;
 }
 
 bool OutputController::setStrengthV2(int channelA, int channelB) {
@@ -69,6 +78,7 @@ bool OutputController::setStrengthV2(int channelA, int channelB) {
     log_.add("设置2.0强度: A=" + String(channelA) + ", B=" + String(channelB));
   } else {
     log_.add("设置2.0强度失败");
+    ble_.handleTransportFailure();
   }
   return success;
 }
@@ -188,9 +198,8 @@ void OutputController::handleWaveSend() {
     if (state_.isSending) {
       state_.isSending = false;
       log_.add("波形发送失败");
-    } else {
-      state_.linkReady.store(false, std::memory_order_release);
     }
+    ble_.handleTransportFailure();
   }
   if (state_.isSending) {
     if (success && state_.waveIndex % 100 == 0) {

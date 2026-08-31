@@ -36,7 +36,19 @@ void BleManager::enqueueEvent(const BleEvent& event) {
 }
 
 bool BleManager::pollEvent(BleEvent& event) {
-  return eventQueue_ && xQueueReceive(eventQueue_, &event, 0) == pdPASS;
+  if (eventQueue_ && xQueueReceive(eventQueue_, &event, 0) == pdPASS) return true;
+  // A disconnect callback can be dropped when the fixed queue is full.  The
+  // loop still has an authoritative link-alive flag to recover that event.
+  if (state_.deviceConnected.load(std::memory_order_acquire) &&
+      !state_.bleLinkAlive.load(std::memory_order_acquire)) {
+    event = {BleEventType::Disconnected, 0, 0, 0};
+    return true;
+  }
+  return false;
+}
+
+uint32_t BleManager::takeDroppedEventCount() {
+  return droppedEvents_.exchange(0, std::memory_order_relaxed);
 }
 
 dglab::DeviceIdentity BleManager::makeIdentity(BLEAddress address, uint8_t addressType) {
@@ -88,6 +100,10 @@ void BleManager::handleNotification(uint8_t* data, size_t length, bool isNotify)
 }
 
 void BleManager::handleDisconnectEvent() {
+  if (!state_.deviceConnected.load(std::memory_order_acquire) &&
+      state_.clientCleanupPending) {
+    return;
+  }
   log_.add("设备连接断开");
   state_.deviceConnected.store(false, std::memory_order_release);
   state_.linkReady.store(false, std::memory_order_release);
@@ -101,15 +117,16 @@ bool BleManager::handleDisconnectedClient(bool& manualDisconnect) {
   state_.manualDisconnectRequested = false;
   state_.deviceConnected.store(false, std::memory_order_release);
   state_.linkReady.store(false, std::memory_order_release);
-  if (client_) {
-    delete client_;
-    client_ = nullptr;
-  }
+  state_.bleLinkAlive.store(false, std::memory_order_release);
   characteristicA2_ = nullptr;
   characteristicB2_ = nullptr;
   characteristicPwmAB2_ = nullptr;
   characteristicWrite3_ = nullptr;
   characteristicNotify3_ = nullptr;
+  if (client_) {
+    delete client_;
+    client_ = nullptr;
+  }
   state_.deviceType = DeviceType::None;
   if (manualDisconnect) state_.connectedIdentityValid = false;
   return true;
@@ -141,7 +158,7 @@ bool BleManager::autoConnectNearestDevice() {
   }
 
   log_.add("自动连接距离最近的设备: " + best->name + " RSSI=" + String(best->rssi));
-  if (!connectToDevice(best->address, best->type, &best->identity, false)) {
+  if (!connectToDevice(best->address, best->type, best->identity, false)) {
     log_.add("自动连接失败");
     return false;
   }
@@ -149,7 +166,7 @@ bool BleManager::autoConnectNearestDevice() {
 }
 
 bool BleManager::connectToDevice(const String& address, DeviceType type,
-                                 const dglab::DeviceIdentity* identity,
+                                 const dglab::DeviceIdentity& identity,
                                  bool) {
   if (type == DeviceType::None) {
     log_.add("未知设备类型");
@@ -164,7 +181,7 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
   client_ = BLEDevice::createClient();
   client_->setClientCallbacks(&clientCallbacks_);
 
-  const uint8_t addressType = identity ? identity->addressType : 1;
+  const uint8_t addressType = identity.addressType;
   if (!client_->connect(bleAddress, static_cast<esp_ble_addr_type_t>(addressType))) {
     log_.add("连接失败");
     delete client_;
@@ -192,9 +209,11 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
     if (service) {
       characteristicA2_ = service->getCharacteristic(BLEUUID(kCharacteristicAUuid2));
       characteristicB2_ = service->getCharacteristic(BLEUUID(kCharacteristicBUuid2));
-      ok = (characteristicA2_ && characteristicB2_);
-
       characteristicPwmAB2_ = service->getCharacteristic(BLEUUID(kCharacteristicPwmUuid2));
+      ok = characteristicA2_ && characteristicB2_ && characteristicPwmAB2_ &&
+           (characteristicA2_->canWrite() || characteristicA2_->canWriteNoResponse()) &&
+           (characteristicB2_->canWrite() || characteristicB2_->canWriteNoResponse()) &&
+           (characteristicPwmAB2_->canWrite() || characteristicPwmAB2_->canWriteNoResponse());
       if (characteristicPwmAB2_ && characteristicPwmAB2_->canRead()) {
         auto value = characteristicPwmAB2_->readValue();
         if (value.length() >= 3) {
@@ -220,16 +239,9 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
       if (ok && characteristicNotify3_->canNotify()) {
         characteristicNotify3_->registerForNotify(notifyCallback);
         log_.add("已注册通知回调");
-        std::vector<uint8_t> bfCommand = { 0xBF, 200, 200, 128, 0, 128, 0 };
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-        characteristicWrite3_->writeValue(bfCommand.data(), bfCommand.size(), true);
-#else
-        uint8_t* data = new uint8_t[bfCommand.size()];
-        std::copy(bfCommand.begin(), bfCommand.end(), data);
-        characteristicWrite3_->writeValue(data, bfCommand.size(), true);
-        delete[] data;
-#endif
-        log_.add("已发送软上限设置");
+        const uint8_t bfCommand[7] = {0xBF, 200, 200, 128, 0, 128, 0};
+        ok = writeBytes(characteristicWrite3_, bfCommand, sizeof(bfCommand));
+        if (ok) log_.add("已发送软上限设置");
       }
     }
   }
@@ -251,10 +263,8 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
     if (d.address == address) state_.connectedDeviceName = d.name;
   state_.connectedDeviceAddress = address;
   if (state_.connectedDeviceName.length() == 0) state_.connectedDeviceName = address;
-  if (identity) {
-    state_.connectedIdentity = *identity;
-    state_.connectedIdentityValid = true;
-  }
+  state_.connectedIdentity = identity;
+  state_.connectedIdentityValid = true;
   return true;
 }
 
@@ -307,44 +317,44 @@ void BleManager::disconnectDevice() {
   }
 }
 
+void BleManager::handleTransportFailure() {
+  state_.linkReady.store(false, std::memory_order_release);
+  state_.manualDisconnectRequested = false;
+  state_.bleLinkAlive.store(false, std::memory_order_release);
+  if (client_ && state_.deviceConnected.load(std::memory_order_acquire)) {
+    client_->disconnect();
+  } else {
+    state_.deviceConnected.store(false, std::memory_order_release);
+    state_.clientCleanupPending = false;
+  }
+}
+
+bool BleManager::writeBytes(BLERemoteCharacteristic* characteristic,
+                            const uint8_t* data, size_t length) {
+  if (!characteristic || !data || length == 0) return false;
+  const bool withResponse = characteristic->canWrite();
+  if (!withResponse && !characteristic->canWriteNoResponse()) return false;
+#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
+  return characteristic->writeValue(const_cast<uint8_t*>(data), length, withResponse);
+#else
+  // ESP32 BLE Arduino's classic API returns void; reaching the call is the
+  // only success signal available on that implementation.
+  characteristic->writeValue(const_cast<uint8_t*>(data), length, withResponse);
+  return true;
+#endif
+}
+
 bool BleManager::writeV2WaveBytes(const std::vector<uint8_t>& bytesA,
                                   const std::vector<uint8_t>& bytesB) {
-  auto writeBuf = [](BLERemoteCharacteristic* characteristic,
-                     const std::vector<uint8_t>& bytes) -> bool {
-    if (!characteristic) return false;
-    bool canWriteRsp = characteristic->canWrite();
-    bool canWriteNR = characteristic->canWriteNoResponse();
-    if (!(canWriteRsp || canWriteNR)) return false;
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-    return characteristic->writeValue(const_cast<uint8_t*>(bytes.data()), bytes.size(), canWriteRsp);
-#else
-    uint8_t* data = new uint8_t[bytes.size()];
-    std::copy(bytes.begin(), bytes.end(), data);
-    characteristic->writeValue(data, bytes.size(), canWriteRsp);
-    delete[] data;
-    return true;
-#endif
-  };
-  return writeBuf(characteristicA2_, bytesA) && writeBuf(characteristicB2_, bytesB);
+  return writeBytes(characteristicA2_, bytesA.data(), bytesA.size()) &&
+         writeBytes(characteristicB2_, bytesB.data(), bytesB.size());
 }
 
 bool BleManager::writeV2StrengthBytes(const uint8_t (&bytes)[3]) {
-  if (!characteristicPwmAB2_) return false;
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-  return characteristicPwmAB2_->writeValue(const_cast<uint8_t*>(bytes), 3, true);
-#else
-  characteristicPwmAB2_->writeValue(const_cast<uint8_t*>(bytes), 3, true);
-  return true;
-#endif
+  return writeBytes(characteristicPwmAB2_, bytes, 3);
 }
 
 bool BleManager::writeV3Frame(const dglab::B0Frame& frame) {
   if (!characteristicWrite3_ || !state_.deviceConnected || state_.deviceType != DeviceType::DG3) return false;
-  if (!characteristicWrite3_->canWrite() && !characteristicWrite3_->canWriteNoResponse()) return false;
-#ifdef CONFIG_BT_NIMBLE_ROLE_CENTRAL
-  return characteristicWrite3_->writeValue(frame.bytes, sizeof(frame.bytes), true);
-#else
-  characteristicWrite3_->writeValue(const_cast<uint8_t*>(frame.bytes), sizeof(frame.bytes), true);
-  return true;
-#endif
+  return writeBytes(characteristicWrite3_, frame.bytes, sizeof(frame.bytes));
 }

@@ -15,12 +15,14 @@ class BleManager {
   BleManager(AppState& state, AppLog& log);
   bool begin();
   bool pollEvent(BleEvent& event);
+  uint32_t takeDroppedEventCount();
   bool startBleScan();
   bool handleAutoScan();
   bool connectToDevice(const String& address, DeviceType type,
-                       const dglab::DeviceIdentity* identity = nullptr,
+                       const dglab::DeviceIdentity& identity,
                        bool manualSelection = false);
   void disconnectDevice();
+  void handleTransportFailure();
   void handleDisconnectEvent();
   bool handleDisconnectedClient(bool& manualDisconnect);
   const std::vector<ScannedDevice>& scannedDevices() const { return scannedDevices_; }
@@ -62,6 +64,8 @@ class BleManager {
   static BleManager* notifyOwner_;
 
   void enqueueEvent(const BleEvent& event);
+  bool writeBytes(BLERemoteCharacteristic* characteristic,
+                  const uint8_t* data, size_t length);
   static void notifyCallback(BLERemoteCharacteristic*, uint8_t* data,
                              size_t length, bool isNotify);
   void handleNotification(uint8_t* data, size_t length, bool isNotify);

@@ -27,6 +27,10 @@ void processBleEvents() {
       bleManager.handleDisconnectEvent();
     }
   }
+  const uint32_t dropped = bleManager.takeDroppedEventCount();
+  if (dropped > 0) {
+    appLog.add("BLE 事件队列溢出，丢弃=" + String(dropped));
+  }
 }
 
 void setup() {

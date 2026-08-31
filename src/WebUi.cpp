@@ -218,10 +218,15 @@ void WebUi::begin() {
         for (auto& d : ble_.scannedDevices()) {
           if (d.address == address && d.type == type) { selected = &d; break; }
         }
-        if (!selected || !ble_.connectToDevice(address, type, &selected->identity, true)) {
+        if (!selected) {
           log_.add("连接失败: 类型无效或连接错误");
         } else {
-          output_.onConnected(true);
+          output_.onManualConnectionAttempt();
+          if (!ble_.connectToDevice(address, type, selected->identity, true)) {
+            log_.add("连接失败: 类型无效或连接错误");
+          } else {
+            output_.onConnected(true);
+          }
         }
       }
     }
