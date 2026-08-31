@@ -120,67 +120,71 @@ dglab::WaveBlock OutputController::currentWaveBlock() {
   return block;
 }
 
-void OutputController::drainStrengthCommand() {
-  if (!state_.deviceConnected || state_.deviceType != DeviceType::DG3) return;
-  strengthController_.tick(millis());
-  PreparedStrengthCommand command = {};
-  uint32_t now = millis();
-  if (!strengthController_.prepareCommand(now, command)) {
-    state_.waitingForResponse = strengthController_.waitingForResponse();
-    state_.isInputAllowed = !state_.waitingForResponse;
-    return;
-  }
-  const WaveBlock wave = state_.isSending ? currentWaveBlock() : dglab::kDisabledWave;
-  B0Frame frame = {};
-  dglab::encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
-                  wave, wave, frame);
-  if (ble_.writeV3Frame(frame)) {
-    strengthController_.commitPrepared(command, now);
-    state_.strengthA = strengthController_.strengthA();
-    state_.strengthB = strengthController_.strengthB();
-    state_.orderNo = static_cast<uint8_t>(command.sequenceMethod >> 4);
-    state_.waitingForResponse = true;
-    state_.isInputAllowed = false;
-    log_.add("已发送强度指令");
-  } else {
-    strengthController_.rollbackPrepared(command);
-    log_.add("强度指令写入失败");
-  }
-}
-
 void OutputController::handleWaveSend() {
   if (!state_.deviceConnected || !state_.linkReady.load(std::memory_order_acquire)) return;
 
-  unsigned long now = millis();
-  if (state_.isSending && dglab::isWaveSendDue(now, state_.lastSendTime)) {
-    state_.lastSendTime = now;
+  const uint32_t now = millis();
+  if (state_.deviceType == DeviceType::DG3) {
+    if (strengthController_.tick(now)) {
+      state_.strengthConfirmed = false;
+      log_.add("B1 回应超时，强度状态未确认");
+    }
+    state_.waitingForResponse = strengthController_.waitingForResponse();
+    state_.isInputAllowed = !state_.waitingForResponse;
+  }
 
+  if (state_.deviceType == DeviceType::DG2) {
+    if (!state_.isSending || !dglab::isWaveSendDue(now, state_.lastSendTime)) return;
+    state_.lastSendTime = now;
     const char* data = waveforms::current(state_.deviceType, state_.selectedWave,
                                            state_.waveIndex);
-    bool success = false;
-
-    if (state_.deviceType == DeviceType::DG2) {  // ---- V2 ----
-      success = sendWaveV2(data, data);
-    } else {                                  // ---- V3 ----
-      const WaveBlock wave = currentWaveBlock();
-      B0Frame frame = {};
-      dglab::encodeB0(2, 0, static_cast<uint8_t>(state_.strengthA), static_cast<uint8_t>(state_.strengthB), wave, wave, frame);
-      success = ble_.writeV3Frame(frame);
-    }
-
-    if (!success) {
+    if (!sendWaveV2(data, data)) {
       state_.isSending = false;
       log_.add("波形发送失败");
     } else if (state_.waveIndex % 100 == 0) {
       log_.add("波形发送 index=" + String(state_.waveIndex));
     }
     ++state_.waveIndex;
-  } else if (!state_.isSending && state_.deviceType == DeviceType::DG3 && dglab::isWaveSendDue(now, state_.lastSendTime)) {
-    state_.lastSendTime = now;
-    B0Frame frame = {};
-    dglab::encodeB0(2, 0, static_cast<uint8_t>(state_.strengthA), static_cast<uint8_t>(state_.strengthB),
-                    dglab::kDisabledWave, dglab::kDisabledWave, frame);
-    if (!ble_.writeV3Frame(frame)) state_.linkReady.store(false, std::memory_order_release);
+    return;
+  }
+
+  const WaveBlock wave = state_.isSending ? currentWaveBlock() : dglab::kDisabledWave;
+  PreparedStrengthCommand command = {};
+  B0Frame frame = {};
+  if (!dglab::prepareB0Cycle(now, state_.lastSendTime, strengthController_,
+                             wave, command, frame)) {
+    return;
+  }
+  state_.lastSendTime = now;
+  const bool success = ble_.writeV3Frame(frame);
+  if (success) {
+    if (command.valid) {
+      strengthController_.commitPrepared(command, now);
+      state_.strengthA = command.targetStrengthA;
+      state_.strengthB = command.targetStrengthB;
+      state_.strengthConfirmed = false;
+      state_.orderNo = static_cast<uint8_t>(command.sequenceMethod >> 4);
+      state_.waitingForResponse = true;
+      state_.isInputAllowed = false;
+      log_.add("已发送强度指令");
+    }
+  } else {
+    if (command.valid) {
+      strengthController_.rollbackPrepared(command);
+      log_.add("强度指令写入失败");
+    }
+    if (state_.isSending) {
+      state_.isSending = false;
+      log_.add("波形发送失败");
+    } else {
+      state_.linkReady.store(false, std::memory_order_release);
+    }
+  }
+  if (state_.isSending) {
+    if (success && state_.waveIndex % 100 == 0) {
+      log_.add("波形发送 index=" + String(state_.waveIndex));
+    }
+    ++state_.waveIndex;
   }
 }
 
@@ -227,7 +231,7 @@ void OutputController::onStrengthResponse(const BleEvent& event) {
   strengthController_.onStrengthResponse(event.sequence, event.strengthA, event.strengthB, millis());
   state_.strengthA = strengthController_.strengthA();
   state_.strengthB = strengthController_.strengthB();
-  state_.strengthConfirmed = true;
+  state_.strengthConfirmed = strengthController_.feedbackSynchronized();
   state_.waitingForResponse = strengthController_.waitingForResponse();
   state_.isInputAllowed = !state_.waitingForResponse;
   log_.add("收到强度回应: 序列号=" + String(event.sequence) + ", A=" + String(state_.strengthA) + ", B=" + String(state_.strengthB));

@@ -22,6 +22,21 @@ bool isWaveSendDue(uint32_t now, uint32_t lastSend) {
   return static_cast<uint32_t>(now - lastSend) >= kWaveIntervalMs;
 }
 
+bool prepareB0Cycle(uint32_t now, uint32_t lastSend,
+                    StrengthController& controller, const WaveBlock& wave,
+                    PreparedStrengthCommand& command, B0Frame& frame) {
+  if (!isWaveSendDue(now, lastSend)) return false;
+
+  command = {};
+  if (controller.prepareCommand(now, command)) {
+    encodeB0(2, command.sequenceMethod, command.strengthA, command.strengthB,
+             wave, wave, frame);
+  } else {
+    encodeB0(2, 0, 0, 0, wave, wave, frame);
+  }
+  return true;
+}
+
 StrengthController::StrengthController()
     : pendingA_{false, StrengthOperation::Increase, 0},
       pendingB_{false, StrengthOperation::Increase, 0}, strengthA_(0),

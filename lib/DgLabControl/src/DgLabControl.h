@@ -88,6 +88,10 @@ class StrengthController {
                int& amount);
 };
 
+bool prepareB0Cycle(uint32_t now, uint32_t lastSend,
+                    StrengthController& controller, const WaveBlock& wave,
+                    PreparedStrengthCommand& command, B0Frame& frame);
+
 struct DeviceIdentity {
   uint8_t address[6];
   uint8_t addressType;

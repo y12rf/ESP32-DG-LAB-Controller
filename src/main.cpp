@@ -51,7 +51,6 @@ void loop() {
     outputController.onDisconnected(manualDisconnect);
   }
 
-  outputController.drainStrengthCommand();
   outputController.handleWaveSend();
   if (bleManager.handleAutoScan()) outputController.onConnected(false);
   delay(10);

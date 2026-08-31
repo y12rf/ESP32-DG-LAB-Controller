@@ -16,7 +16,6 @@ class OutputController {
   void startSending();
   void stopSending();
   void selectWave(char wave);
-  void drainStrengthCommand();
   void handleWaveSend();
 
  private:
