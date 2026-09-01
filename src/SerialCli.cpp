@@ -17,10 +17,12 @@ void SerialCli::begin() {
 void SerialCli::printPrompt() { Serial.print(F("$ ")); }
 
 void SerialCli::handleInput() {
-  while (Serial.available() > 0) {
+  size_t processed = 0;
+  while (processed < kMaxInputBytesPerLoop && Serial.available() > 0) {
     const char ch = static_cast<char>(Serial.read());
     if (watching_) processWatchByte(ch);
     else processNormalByte(ch);
+    ++processed;
   }
   if (watching_) {
     const uint32_t now = millis();

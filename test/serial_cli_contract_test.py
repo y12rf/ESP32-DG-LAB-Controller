@@ -27,6 +27,13 @@ class SerialCliStructureTest(unittest.TestCase):
         self.assertNotIn("xTaskCreate", source)
         self.assertNotIn("ArduinoJson", header + source)
 
+    def test_input_processing_is_bounded_per_loop(self):
+        header = read(SERIAL_H)
+        source = read(SERIAL_CPP)
+        self.assertIn("kMaxInputBytesPerLoop = 8", header)
+        self.assertIn("processed < kMaxInputBytesPerLoop", source)
+        self.assertIn("++processed", source)
+
     def test_all_commands_are_dispatched(self):
         source = read(SERIAL_CPP)
         for command in (

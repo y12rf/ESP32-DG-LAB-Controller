@@ -18,6 +18,7 @@ class SerialCli {
 
  private:
   static constexpr size_t kInputCapacity = 96;
+  static constexpr size_t kMaxInputBytesPerLoop = 8;
   static constexpr uint32_t kWatchIntervalMs = 500;
   static constexpr int kBarWidth = 20;
 
