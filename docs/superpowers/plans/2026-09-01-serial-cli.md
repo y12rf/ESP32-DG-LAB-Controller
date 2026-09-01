@@ -43,6 +43,7 @@
 - Create: `src/CliParser.h`
 - Create: `src/CliParser.cpp`
 - Create: `test/test_cli_parser/test_main.cpp`
+- Modify: `test/test_dglab_control/test_main.cpp`
 - Modify: `platformio.ini:13`
 
 **Interfaces:**
@@ -51,6 +52,14 @@
 - Produces types: `CliCommandType`, `CliParseError`, `CliStrengthAction`, and `CliCommand` with `value`, `channel`, `wave`, `strengthAction`, `enabled`, and `start` fields.
 
 - [ ] **Step 1: Write the failing parser tests**
+
+First add the empty Unity lifecycle hooks required by the Windows native
+toolchain near the top of `test/test_dglab_control/test_main.cpp`:
+
+```cpp
+void setUp() {}
+void tearDown() {}
+```
 
 Create `test/test_cli_parser/test_main.cpp`:
 
@@ -68,6 +77,9 @@ CliParseError parse(const char* text, CliCommand& command) {
   return parseCliCommand(line, command);
 }
 }
+
+void setUp() {}
+void tearDown() {}
 
 void test_simple_commands() {
   const char* inputs[] = {
@@ -397,7 +409,7 @@ Expected: the parser suite reports 6 passed tests; the existing `test_dglab_cont
 - [ ] **Step 6: Commit the parser foundation**
 
 ```powershell
-git add src/CliParser.h src/CliParser.cpp test/test_cli_parser/test_main.cpp platformio.ini
+git add src/CliParser.h src/CliParser.cpp test/test_cli_parser/test_main.cpp test/test_dglab_control/test_main.cpp platformio.ini
 git commit -m "feat: add fixed-buffer CLI parser"
 ```
 
