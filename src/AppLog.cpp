@@ -6,7 +6,7 @@ void AppLog::add(const String& message) {
   unsigned long ts = millis() / 1000;
   entries_[next_] = String(ts) + "s: " + message;
   next_ = (next_ + 1) % kCapacity;
-  Serial.println(message);
+  if (serialMirrorEnabled_) Serial.println(message);
 }
 
 const String& AppLog::newest(size_t offset) const {

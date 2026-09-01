@@ -9,8 +9,11 @@ class AppLog {
   void add(const String& message);
   size_t capacity() const { return kCapacity; }
   const String& newest(size_t offset) const;
+  void setSerialMirrorEnabled(bool enabled) { serialMirrorEnabled_ = enabled; }
+  bool serialMirrorEnabled() const { return serialMirrorEnabled_; }
 
  private:
   String entries_[kCapacity];
   size_t next_ = 0;
+  bool serialMirrorEnabled_ = true;
 };
