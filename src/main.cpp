@@ -6,6 +6,7 @@
 #include "AppState.h"
 #include "BleManager.h"
 #include "OutputController.h"
+#include "SerialCli.h"
 #include "WebUi.h"
 
 namespace {
@@ -15,6 +16,7 @@ AppState appState;
 AppLog appLog;
 BleManager bleManager(appState, appLog);
 OutputController outputController(appState, appLog, bleManager);
+SerialCli serialCli(appState, appLog, bleManager, outputController);
 WebUi webUi(appState, appLog, bleManager, outputController);
 }
 
@@ -36,7 +38,7 @@ void processBleEvents() {
 }
 
 void setup() {
-  Serial.begin(19200);
+  Serial.begin(115200);
   Serial.println("DG-LAB 控制器启动");
   WiFi.softAP(kSsid, kPassword, 1, 1);
   Serial.print("AP IP: ");
@@ -46,6 +48,7 @@ void setup() {
   webUi.begin();
   appLog.add("系统初始化完成");
   appState.lastScanFinished = millis();
+  serialCli.begin();
 }
 
 void loop() {
@@ -56,6 +59,7 @@ void loop() {
   }
 
   outputController.handleWaveSend();
+  serialCli.handleInput();
   webUi.handleClient();
   if (bleManager.handleAutoScan()) outputController.onConnected(false);
   delay(10);
