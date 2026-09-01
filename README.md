@@ -12,6 +12,7 @@
 - **强度反馈**：2.0 订阅 `1504` 强度通知；3.0 使用 B1 序列反馈，并在反馈超时时标记为未确认。
 - **轻量 Web 控制页**：页面从 Flash 一次加载，状态通过每秒一次的小型 JSON 请求局部更新；页面位于后台时停止轮询。
 - **手机端分页布局**：状态、控制和日志分开显示，强度使用明确的离散步进按钮，不使用易误触的滑杆。
+- **串口 CLI**：通过 115200 baud 串口执行扫描、编号连接、强度、波形和输出控制，并提供英文 `status` 与 ANSI `watch` 状态面板。
 
 断线恢复：意外断开时会保留发送意图，并仅在重新连接到相同 BLE 地址及地址类型的设备后恢复波形。手动断开或手动选择另一台设备时，发送状态保持停止，需要在界面中重新点击“开始发送”。
 
@@ -28,6 +29,7 @@
 - `src/BleManager.*`：扫描、profile 建立、通知事件和 BLE client 生命周期。
 - `src/OutputController.*`：V2/V3 输出调度、强度请求和连接恢复协调。
 - `src/WebUi.*`、`src/WebAssets.*`：JSON API 和 Flash 中的静态单页控制界面。
+- `src/CliParser.*`、`src/SerialCli.*`：固定缓冲命令解析、串口控制命令和实时状态面板。
 - `src/Waveforms.*`：与官方演示一致的内置波形表。
 - `src/AppState.*`、`src/AppLog.*`：应用状态和固定容量日志。
 - `src/main.cpp`：初始化及主循环编排。
@@ -72,6 +74,42 @@
 5. 上传完成后，ESP32 会启动并创建一个名为 `ESP32-Controller` 的 Wi-Fi 隐藏热点。
 6. 在终端设备上手动添加并连接该 Wi-Fi 热点。在浏览器中访问 `http://192.168.4.1/`，即可进入控制界面。
 
+### 串口 CLI
+
+固件和 PlatformIO 串口监视器统一使用 115200 baud：
+
+```bash
+pio device monitor
+```
+
+输入 `help` 查看命令：
+
+```text
+status
+watch
+scan
+devices
+connect <index>
+disconnect
+autoconnect <on|off>
+output <start|stop>
+wave <a|b|c>
+strength <a|b> <add|sub|set> <value>
+logs
+help
+```
+
+手动选择设备时，先关闭自动连接：
+
+```text
+$ autoconnect off
+$ scan
+$ devices
+$ connect 1
+```
+
+`watch` 使用 ANSI 转义每 500 ms 原地刷新；输入 `q` 后回车退出。退出监视不会停止设备输出。CLI 自身输出为英文，`logs` 显示的现有固件日志可能包含中文。
+
 > 固件包含 Web 与 BLE 功能，体积超过默认应用分区。项目已使用 `huge_app.csv`（3 MB 应用区）分区方案，因此不支持 OTA 双分区升级。
 
 ### 测试
@@ -80,11 +118,12 @@ WebUi 契约、纯协议状态机和 ESP32 固件分别使用以下命令验证�
 
 ```bash
 python test/web_ui_contract_test.py
+python test/serial_cli_contract_test.py
 pio test -e native
 pio run -e esp32dev
 ```
 
-SPA 不增加运行时依赖，V2/V3 BLE 协议和输出行为保持不变。GitHub Actions 会依次运行 WebUi 契约、Native 测试和 ESP32 固件构建。本机运行 Native 测试需要系统中可用的 `gcc` / `g++`。
+SPA 和串口 CLI 不增加运行时依赖，V2/V3 BLE 协议和输出行为保持不变。GitHub Actions 会依次运行 WebUi 契约、串口 CLI 契约、Native 测试和 ESP32 固件构建。本机运行 Native 测试需要系统中可用的 `gcc` / `g++`。
 
 ---
 
