@@ -2,6 +2,9 @@
 #include <DgLabControl.h>
 #include "../../src/Waveforms.h"
 
+void setUp() {}
+void tearDown() {}
+
 using namespace dglab;
 
 void test_builtin_v2_wave_tables_keep_sizes_and_rotation() {
