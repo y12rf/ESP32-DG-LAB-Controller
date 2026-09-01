@@ -106,6 +106,20 @@ void test_bad_arguments_are_rejected_for_known_commands() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(CliParseError::InvalidArguments),
                           static_cast<int>(parse(input, command)));
   }
+
+  CliCommand command{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CliParseError::InvalidArguments),
+                        static_cast<int>(parse("status now", command)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CliCommandType::Status),
+                        static_cast<int>(command.type));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CliParseError::InvalidArguments),
+                        static_cast<int>(parse("connect", command)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CliCommandType::Connect),
+                        static_cast<int>(command.type));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CliParseError::InvalidArguments),
+                        static_cast<int>(parse("strength c add 1", command)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CliCommandType::Strength),
+                        static_cast<int>(command.type));
 }
 
 void test_unknown_and_empty_commands() {
