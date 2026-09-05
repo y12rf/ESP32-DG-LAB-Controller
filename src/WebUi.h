@@ -5,13 +5,15 @@
 #include "BleManager.h"
 #include "OutputController.h"
 #include <WebServer.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 class WebUi {
  public:
   WebUi(AppState& state, AppLog& log, BleManager& ble,
         OutputController& output);
-  void begin();
-  void handleClient() { server_.handleClient(); }
+  bool begin();
+  void processRequest();
 
  private:
   AppState& state_;
@@ -19,6 +21,14 @@ class WebUi {
   BleManager& ble_;
   OutputController& output_;
   WebServer server_{80};
+  QueueHandle_t requests_ = nullptr;
+  TaskHandle_t httpTask_ = nullptr;
+  int responseCode_ = 200;
+  String responsePayload_;
+
+  void onJson(const char* uri, HTTPMethod method,
+              WebServer::THandlerFunction handler);
+  static void runHttp(void* context);
 
   void sendIndex();
   void sendStatus();

@@ -4,6 +4,9 @@
 
 using namespace dglab;
 
+void setUp() {}
+void tearDown() {}
+
 void test_builtin_v2_wave_tables_keep_sizes_and_rotation() {
   const waveforms::V2WaveBlock& first = waveforms::currentV2('a', 0);
   const waveforms::V2WaveBlock& wrapped = waveforms::currentV2('a', 12);

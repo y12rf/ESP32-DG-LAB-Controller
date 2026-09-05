@@ -41,6 +41,12 @@ jobs:
       - name: Check WebUi contracts
         run: python test/web_ui_contract_test.py
 
+      - name: Check browser actions
+        run: node --test test/web_actions_test.js
+
+      - name: Check BLE failure paths
+        run: python test/ble_runtime_test.py
+
       - name: Run native control tests
         run: pio test -e native
 

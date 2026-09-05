@@ -7,3 +7,4 @@ docs/
 .superpowers/
 .worktrees/
 .vscode/
+__pycache__/

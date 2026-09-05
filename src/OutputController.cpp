@@ -26,7 +26,8 @@ bool OutputController::sendWaveV2(const waveforms::V2WaveBlock& wave) {
 }
 
 bool OutputController::setStrengthV2(int channelA, int channelB) {
-  if (!state_.deviceConnected || state_.deviceType != DeviceType::DG2) {
+  if (!state_.deviceConnected || !state_.linkReady.load() ||
+      state_.deviceType != DeviceType::DG2) {
     log_.add("设备未连接或非2.0设备");
     return false;
   }

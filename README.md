@@ -11,9 +11,12 @@
 - **强度调整**：支持 A/B 通道相对增加、相对减少和绝对设置。
 - **强度反馈**：2.0 订阅 `1504` 强度通知；3.0 使用 B1 序列反馈，并在反馈超时时标记为未确认。
 - **轻量 Web 控制页**：页面从 Flash 一次加载，状态通过每秒一次的小型 JSON 请求局部更新；页面位于后台时停止轮询。
+- **独立 HTTP 收发**：HTTP 任务使用 4 KB 栈和单槽队列；解析后的 API 操作交给主循环执行，等待请求正文或发送响应不会阻塞波形调度。操作等待期间点击停止会保留请求，并在该操作结束后发送。
 - **手机端分页布局**：状态、控制和日志分开显示，强度使用明确的离散步进按钮，不使用易误触的滑杆。
 
 断线恢复：意外断开时会保留发送意图，并仅在重新连接到相同 BLE 地址及地址类型的设备后恢复波形。手动断开或手动选择另一台设备时，发送状态保持停止，需要在界面中重新点击“开始发送”。
+
+断线等待恢复时，所有页面顶部都会显示“取消恢复输出”；点击后会清除发送意图，后续重连保持停止。操作成功或失败的提示也位于页面顶部。
 
 ### 协议行为
 
@@ -31,6 +34,10 @@
 - `src/Waveforms.*`：与官方演示一致的内置波形表。
 - `src/AppState.*`、`src/AppLog.*`：应用状态和固定容量日志。
 - `src/main.cpp`：初始化及主循环编排。
+
+`scripts/ble_dispatch_overlay.py` 在构建目录生成 Arduino BLE `BLEDevice.cpp` 的副本，为整个 GATT 分发添加 `BleDispatchGuard`。所有 client 释放都使用同一个互斥锁，覆盖连接失败及断开路径，不修改共享的 PlatformIO 包。升级 BLE 库时需核对该构建补丁及 `setCustomGattcHandler` 的调用顺序。
+
+通知订阅通过 ESP-IDF API 完成，注册及 CCCD 写入各最多等待 1.5 秒，同步错误、异步错误、超时或断开均视为初始化失败。V2 必须成功读取初始强度才能进入就绪状态；读取失败时会断开并返回错误。
 
 ---
 
@@ -80,11 +87,15 @@ WebUi 契约、纯协议状态机和 ESP32 固件分别使用以下命令验证�
 
 ```bash
 python test/web_ui_contract_test.py
+node --test test/web_actions_test.js
+python test/ble_runtime_test.py
 pio test -e native
 pio run -e esp32dev
 ```
 
-SPA 不增加运行时依赖，V2/V3 BLE 协议和输出行为保持不变。GitHub Actions 会依次运行 WebUi 契约、Native 测试和 ESP32 固件构建。本机运行 Native 测试需要系统中可用的 `gcc` / `g++`。
+SPA 不增加运行时依赖，V2/V3 BLE 协议保持不变。GitHub Actions 会运行 WebUi 契约、浏览器操作回归、Native 测试和 ESP32 固件构建。浏览器操作测试需要 Node.js 18 或更新版本；Native 测试需要 PATH 中可用的 `gcc` / `g++`（Windows 可使用 MinGW）。
+
+实机回归应覆盖：输出期间慢速发送 HTTP 请求正文及慢速接收响应，确认 B0 周期未被 HTTP 等待打断；调整强度请求等待期间点击停止；反复手动断开及意外断线后重连，确认无崩溃且恢复策略正确。主机测试和固件构建不替代这些 BLE/Wi-Fi 时序检查。
 
 ---
 
