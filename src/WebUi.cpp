@@ -8,8 +8,37 @@ WebUi::WebUi(AppState& state, AppLog& log, BleManager& ble,
     : state_(state), log_(log), ble_(ble), output_(output) {}
 
 void WebUi::sendJson(int code, const String& payload) {
-  server_.sendHeader("Cache-Control", "no-store");
-  server_.send(code, "application/json; charset=utf-8", payload);
+  responseCode_ = code;
+  responsePayload_ = payload;
+}
+
+void WebUi::onJson(const char* uri, HTTPMethod method,
+                   WebServer::THandlerFunction handler) {
+  server_.on(uri, method, [this, handler]() {
+    // The synchronous server has one request in flight. While this task
+    // waits, the loop exclusively owns the handler and its parsed arguments.
+    const WebServer::THandlerFunction* pending = &handler;
+    xQueueSend(requests_, &pending, portMAX_DELAY);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    // Socket writes must stay outside the control loop too (slow readers).
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(responseCode_, "application/json; charset=utf-8", responsePayload_);
+  });
+}
+
+void WebUi::processRequest() {
+  const WebServer::THandlerFunction* handler = nullptr;
+  if (xQueueReceive(requests_, &handler, 0) != pdPASS) return;
+  (*handler)();
+  xTaskNotifyGive(httpTask_);
+}
+
+void WebUi::runHttp(void* context) {
+  auto& ui = *static_cast<WebUi*>(context);
+  for (;;) {
+    ui.server_.handleClient();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 void WebUi::sendOk(const char* extra) {
@@ -109,6 +138,8 @@ void WebUi::sendStatus() {
   payload += F(",\"wave\":\""); payload += state_.selectedWave; payload += '"';
   payload += F(",\"sending\":");
   payload += connected && state_.isSending ? F("true") : F("false");
+  payload += F(",\"desiredSending\":");
+  payload += state_.desiredSending ? F("true") : F("false");
   payload += F(",\"autoConnect\":");
   payload += state_.autoConnectEnabled ? F("true") : F("false");
   payload += F(",\"scanRevision\":"); payload += state_.lastScanFinished;
@@ -149,13 +180,13 @@ void WebUi::sendLogs() {
   sendJson(200, payload);
 }
 
-void WebUi::begin() {
+bool WebUi::begin() {
   server_.on("/", HTTP_GET, [this]() { sendIndex(); });
-  server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
-  server_.on("/api/devices", HTTP_GET, [this]() { sendDevices(); });
-  server_.on("/api/logs", HTTP_GET, [this]() { sendLogs(); });
+  onJson("/api/status", HTTP_GET, [this]() { sendStatus(); });
+  onJson("/api/devices", HTTP_GET, [this]() { sendDevices(); });
+  onJson("/api/logs", HTTP_GET, [this]() { sendLogs(); });
 
-  server_.on("/api/scan", HTTP_POST, [this]() {
+  onJson("/api/scan", HTTP_POST, [this]() {
     if (state_.deviceConnected || state_.scanInProgress ||
         state_.clientCleanupPending) {
       sendError(409, "invalid_state");
@@ -165,7 +196,7 @@ void WebUi::begin() {
     sendOk();
   });
 
-  server_.on("/api/connect", HTTP_POST, [this]() {
+  onJson("/api/connect", HTTP_POST, [this]() {
     if (!server_.hasArg("address") || !server_.hasArg("type") ||
         state_.deviceConnected || state_.clientCleanupPending) {
       sendError(state_.deviceConnected || state_.clientCleanupPending ? 409 : 400,
@@ -204,7 +235,7 @@ void WebUi::begin() {
     sendOk();
   });
 
-  server_.on("/api/disconnect", HTTP_POST, [this]() {
+  onJson("/api/disconnect", HTTP_POST, [this]() {
     if (!state_.deviceConnected) {
       sendError(409, "invalid_state");
       return;
@@ -213,7 +244,7 @@ void WebUi::begin() {
     sendOk();
   });
 
-  server_.on("/api/auto-connect", HTTP_POST, [this]() {
+  onJson("/api/auto-connect", HTTP_POST, [this]() {
     if (!server_.hasArg("enabled")) {
       sendError(400, "invalid_argument");
       return;
@@ -229,7 +260,7 @@ void WebUi::begin() {
     sendOk();
   });
 
-  server_.on("/api/output", HTTP_POST, [this]() {
+  onJson("/api/output", HTTP_POST, [this]() {
     if (!server_.hasArg("sending")) {
       sendError(400, "invalid_argument");
       return;
@@ -249,7 +280,7 @@ void WebUi::begin() {
     sendOk();
   });
 
-  server_.on("/api/wave", HTTP_POST, [this]() {
+  onJson("/api/wave", HTTP_POST, [this]() {
     if (!server_.hasArg("type") || server_.arg("type").length() != 1) {
       sendError(400, "invalid_argument");
       return;
@@ -263,7 +294,7 @@ void WebUi::begin() {
     sendOk();
   });
 
-  server_.on("/api/strength", HTTP_POST, [this]() {
+  onJson("/api/strength", HTTP_POST, [this]() {
     if (!state_.deviceConnected ||
         !state_.linkReady.load(std::memory_order_acquire)) {
       sendError(409, "invalid_state");
@@ -302,6 +333,15 @@ void WebUi::begin() {
                : ",\"disposition\":\"prepared\"");
   });
 
+  requests_ = xQueueCreate(1, sizeof(const WebServer::THandlerFunction*));
+  if (!requests_) return false;
   server_.begin();
+  if (xTaskCreate(runHttp, "http", 4096, this, 1, &httpTask_) != pdPASS) {
+    server_.stop();
+    vQueueDelete(requests_);
+    requests_ = nullptr;
+    return false;
+  }
   log_.add("HTTP 服务器已启动");
+  return true;
 }

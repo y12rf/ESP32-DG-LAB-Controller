@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <BLEScan.h>
+#include <BleDispatch.h>
 
 namespace {
 constexpr const char* kServiceUuid2 = "955a180b-0fe2-f5aa-a094-84b8d4f3e8ad";
@@ -24,9 +25,12 @@ BleManager::BleManager(AppState& state, AppLog& log)
     : state_(state), log_(log), scanCallbacks_(*this), clientCallbacks_(*this) {}
 
 bool BleManager::begin() {
+  BleDispatchGuard guard;
   notifyOwner_ = this;
   eventQueue_ = xQueueCreate(16, sizeof(BleEvent));
-  return eventQueue_ != nullptr;
+  subscriptionQueue_ = xQueueCreate(1, sizeof(esp_gatt_status_t));
+  BLEDevice::setCustomGattcHandler(afterGattEvent);
+  return eventQueue_ != nullptr && subscriptionQueue_ != nullptr;
 }
 
 void BleManager::enqueueEvent(const BleEvent& event) {
@@ -37,10 +41,9 @@ void BleManager::enqueueEvent(const BleEvent& event) {
 
 bool BleManager::pollEvent(BleEvent& event) {
   if (eventQueue_ && xQueueReceive(eventQueue_, &event, 0) == pdPASS) return true;
-  // A disconnect callback can be dropped when the fixed queue is full.  The
-  // loop still has an authoritative link-alive flag to recover that event.
-  if (state_.deviceConnected.load(std::memory_order_acquire) &&
-      !state_.bleLinkAlive.load(std::memory_order_acquire)) {
+  // A separate flag cannot be lost to queue overflow. Link loss alone is
+  // insufficient: BLEClient still accesses its services after onDisconnect.
+  if (disconnectComplete_.exchange(false, std::memory_order_acquire)) {
     event = {BleEventType::Disconnected, 0, 0, 0};
     return true;
   }
@@ -85,12 +88,92 @@ void BleManager::ClientCallbacks::onConnect(BLEClient*) {
 
 void BleManager::ClientCallbacks::onDisconnect(BLEClient*) {
   owner_.state_.bleLinkAlive.store(false, std::memory_order_release);
-  owner_.enqueueEvent({BleEventType::Disconnected, 0, 0, 0});
+  owner_.state_.linkReady.store(false, std::memory_order_release);
+  owner_.disconnectCallbackPending_ = true;
 }
 
-void BleManager::notifyCallback(BLERemoteCharacteristic*, uint8_t* data,
-                                size_t length, bool isNotify) {
-  if (notifyOwner_) notifyOwner_->handleNotification(data, length, isNotify);
+void BleManager::afterGattEvent(esp_gattc_cb_event_t event, esp_gatt_if_t gattcIf,
+                                esp_ble_gattc_cb_param_t* param) {
+  if (!notifyOwner_) return;
+  auto& owner = *notifyOwner_;
+  if (gattcIf == owner.notifyGattIf_) {
+    if (event == ESP_GATTC_NOTIFY_EVT && param->notify.handle == owner.notifyHandle_) {
+      owner.handleNotification(param->notify.value, param->notify.value_len,
+                               param->notify.is_notify);
+    }
+    if (owner.subscriptionWaiting_) {
+      esp_gatt_status_t status = ESP_GATT_ERROR;
+      bool completed = event == ESP_GATTC_DISCONNECT_EVT;
+      if (event == owner.subscriptionEvent_) {
+        if (event == ESP_GATTC_REG_FOR_NOTIFY_EVT) {
+          completed = param->reg_for_notify.handle == owner.subscriptionHandle_;
+          status = param->reg_for_notify.status;
+        } else if (event == ESP_GATTC_WRITE_DESCR_EVT) {
+          completed = param->write.handle == owner.subscriptionHandle_;
+          status = param->write.status;
+        }
+      }
+      if (completed) xQueueSend(owner.subscriptionQueue_, &status, 0);
+    }
+  }
+  // In the pinned Arduino BLE library this hook runs after client/service
+  // dispatch, including removal from the peer map. No client access follows.
+  if (notifyOwner_ && event == ESP_GATTC_DISCONNECT_EVT &&
+      notifyOwner_->disconnectCallbackPending_) {
+    notifyOwner_->disconnectCallbackPending_ = false;
+    notifyOwner_->disconnectComplete_.store(true, std::memory_order_release);
+  }
+}
+
+bool BleManager::waitSubscription() {
+  esp_gatt_status_t status = ESP_GATT_ERROR;
+  const bool received = xQueueReceive(subscriptionQueue_, &status,
+                                      pdMS_TO_TICKS(1500)) == pdPASS;
+  BleDispatchGuard guard;
+  subscriptionWaiting_ = false;
+  return received && status == ESP_GATT_OK && state_.bleLinkAlive.load();
+}
+
+bool BleManager::subscribe(BLERemoteCharacteristic* characteristic) {
+  // Descriptor lookup uses the local GATT cache. Both asynchronous operations
+  // below have a bounded wait, including disconnect and synchronous failure.
+  auto descriptor = characteristic->getDescriptor(BLEUUID(uint16_t(0x2902)));
+  if (!descriptor) return false;
+  esp_gatt_if_t gattcIf;
+  auto address = client_->getPeerAddress();
+  {
+    BleDispatchGuard guard;
+    if (!state_.bleLinkAlive.load()) return false;
+    gattcIf = client_->getGattcIf();
+    notifyGattIf_ = gattcIf;
+    notifyHandle_ = characteristic->getHandle();
+    subscriptionEvent_ = ESP_GATTC_REG_FOR_NOTIFY_EVT;
+    subscriptionHandle_ = notifyHandle_;
+    xQueueReset(subscriptionQueue_);
+    subscriptionWaiting_ = true;
+    if (esp_ble_gattc_register_for_notify(gattcIf, *address.getNative(),
+                                         notifyHandle_) != ESP_OK) {
+      subscriptionWaiting_ = false;
+      return false;
+    }
+  }
+  if (!waitSubscription()) return false;
+  {
+    BleDispatchGuard guard;
+    if (!state_.bleLinkAlive.load()) return false;
+    subscriptionEvent_ = ESP_GATTC_WRITE_DESCR_EVT;
+    subscriptionHandle_ = descriptor->getHandle();
+    xQueueReset(subscriptionQueue_);
+    subscriptionWaiting_ = true;
+    uint8_t enable[2] = {1, 0};
+    if (esp_ble_gattc_write_char_descr(gattcIf, client_->getConnId(),
+          subscriptionHandle_, sizeof(enable), enable, ESP_GATT_WRITE_TYPE_RSP,
+          ESP_GATT_AUTH_REQ_NONE) != ESP_OK) {
+      subscriptionWaiting_ = false;
+      return false;
+    }
+  }
+  return waitSubscription();
 }
 
 void BleManager::handleNotification(uint8_t* data, size_t length,
@@ -133,6 +216,9 @@ bool BleManager::handleDisconnectedClient(bool& manualDisconnect) {
   characteristicWrite3_ = nullptr;
   characteristicNotify3_ = nullptr;
   if (client_) {
+    BleDispatchGuard guard;
+    notifyGattIf_ = ESP_GATT_IF_NONE;
+    notifyHandle_ = 0;
     delete client_;
     client_ = nullptr;
   }
@@ -193,17 +279,16 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
   const uint8_t addressType = identity.addressType;
   if (!client_->connect(bleAddress, static_cast<esp_ble_addr_type_t>(addressType))) {
     log_.add("连接失败");
+    BleDispatchGuard guard;
     delete client_;
     client_ = nullptr;
     state_.deviceType = DeviceType::None;
     return false;
   }
 
-  // The client is now link-connected even though profile discovery is not
-  // ready yet.  Keeping this state visible lets a dropped disconnect event
-  // use the link-alive fallback during discovery failure as well.
+  // Profile discovery is not ready yet. The BLE callback remains the sole
+  // authority for link liveness, including a disconnect during discovery.
   state_.deviceConnected.store(true, std::memory_order_release);
-  state_.bleLinkAlive.store(true, std::memory_order_release);
   state_.strengthConfirmed = false;
 
   log_.add("连接成功，MTU=517");
@@ -233,8 +318,8 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
            characteristicPwmAB2_->canRead() && characteristicPwmAB2_->canNotify() &&
            (characteristicPwmAB2_->canWrite() || characteristicPwmAB2_->canWriteNoResponse());
       if (ok) {
-        characteristicPwmAB2_->registerForNotify(notifyCallback);
-        auto value = characteristicPwmAB2_->readValue();
+        ok = subscribe(characteristicPwmAB2_);
+        auto value = ok ? characteristicPwmAB2_->readValue() : std::string();
         if (value.length() >= 3) {
           const uint8_t valueBytes[3] = {
             static_cast<uint8_t>(value[0]), static_cast<uint8_t>(value[1]), static_cast<uint8_t>(value[2])
@@ -247,6 +332,7 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
           initialStrengthConfirmed = true;
           log_.add("获取当前强度: A=" + String(state_.strengthA) + ", B=" + String(state_.strengthB));
         }
+        ok = ok && initialStrengthConfirmed;
       }
     }
   } else if (type == DeviceType::DG3) {
@@ -258,8 +344,8 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
             (characteristicWrite3_->canWrite() || characteristicWrite3_->canWriteNoResponse()) &&
             characteristicNotify3_->canNotify());
 
-      if (ok && characteristicNotify3_->canNotify()) {
-        characteristicNotify3_->registerForNotify(notifyCallback);
+      if (ok) ok = subscribe(characteristicNotify3_);
+      if (ok) {
         log_.add("已注册通知回调");
         const uint8_t bfCommand[7] = {0xBF, 200, 200, 128, 0, 128, 0};
         ok = writeBytes(characteristicWrite3_, bfCommand, sizeof(bfCommand));
@@ -268,14 +354,16 @@ bool BleManager::connectToDevice(const String& address, DeviceType type,
     }
   }
 
-  if (!ok) {
-    log_.add("服务/特性获取失败");
+  if (!ok || !state_.bleLinkAlive.load()) {
+    log_.add("设备初始化失败（服务、订阅或强度读取）");
     state_.linkReady.store(false, std::memory_order_release);
     client_->disconnect();
     state_.deviceType = DeviceType::None;
     return false;
   }
 
+  BleDispatchGuard guard;
+  if (!state_.bleLinkAlive.load()) return false;
   state_.deviceType = type;
   state_.resumeDeviceType = type;
   state_.linkReady.store(true, std::memory_order_release);

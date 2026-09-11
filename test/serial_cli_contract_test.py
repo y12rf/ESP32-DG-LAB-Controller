@@ -76,7 +76,7 @@ class SerialCliWiringTest(unittest.TestCase):
         source = read(MAIN_CPP)
         output_at = source.index("outputController.handleWaveSend();")
         cli_at = source.index("serialCli.handleInput();")
-        web_at = source.index("webUi.handleClient();")
+        web_at = source.index("webUi.processRequest();")
         self.assertLess(output_at, cli_at)
         self.assertLess(cli_at, web_at)
 

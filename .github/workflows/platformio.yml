@@ -43,6 +43,11 @@ jobs:
 
       - name: Check serial CLI contracts
         run: python test/serial_cli_contract_test.py
+      - name: Check browser actions
+        run: node --test test/web_actions_test.js
+
+      - name: Check BLE failure paths
+        run: python test/ble_runtime_test.py
 
       - name: Run native control tests
         run: pio test -e native

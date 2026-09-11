@@ -34,7 +34,8 @@ class WebUiReadApiContractTest(unittest.TestCase):
     def test_root_and_read_routes_have_fixed_methods(self):
         source = read(WEB_UI_CPP)
         for route in ("/", "/api/status", "/api/devices", "/api/logs"):
-            self.assertIn(f'server_.on("{route}", HTTP_GET', source)
+            registrar = 'server_.on' if route == '/' else 'onJson'
+            self.assertIn(f'{registrar}("{route}", HTTP_GET', source)
         self.assertIn("send_P", source)
         self.assertIn("web_assets::kIndexHtml", source)
 
@@ -49,7 +50,7 @@ class WebUiReadApiContractTest(unittest.TestCase):
         source = read(WEB_UI_CPP)
         for field in (
             "connected", "ready", "type", "name", "strengthA",
-            "strengthB", "confirmed", "waiting", "wave", "sending",
+            "strengthB", "confirmed", "waiting", "wave", "sending", "desiredSending",
             "autoConnect", "scanRevision",
         ):
             self.assertIn(f'\\"{field}\\"', source)
@@ -79,7 +80,7 @@ class WebUiActionApiContractTest(unittest.TestCase):
             "/api/auto-connect", "/api/output", "/api/wave",
             "/api/strength",
         ):
-            self.assertIn(f'server_.on("{route}", HTTP_POST', source)
+            self.assertIn(f'onJson("{route}", HTTP_POST', source)
 
     def test_legacy_state_changing_get_routes_are_removed(self):
         source = read(WEB_UI_CPP)
@@ -147,11 +148,20 @@ class WebUiBrowserContractTest(unittest.TestCase):
 
 
 class WebUiIntegrationContractTest(unittest.TestCase):
-    def test_due_output_runs_before_http_client(self):
+    def test_http_io_is_outside_control_loop(self):
         source = read(MAIN_CPP)
-        output_at = source.index("outputController.handleWaveSend();")
-        web_at = source.index("webUi.handleClient();")
-        self.assertLess(output_at, web_at)
+        self.assertNotIn("handleClient()", source)
+        self.assertLess(source.index("outputController.handleWaveSend();"),
+                        source.index("webUi.processRequest();"))
+        web = read(WEB_UI_CPP)
+        self.assertIn('xTaskCreate(runHttp, "http", 4096', web)
+        handler = web.split("void WebUi::onJson(", 1)[1].split(
+            "void WebUi::processRequest()", 1)[0]
+        self.assertLess(handler.index("ulTaskNotifyTake"),
+                        handler.index("server_.send("))
+        reply = web.split("void WebUi::sendJson(", 1)[1].split(
+            "void WebUi::onJson(", 1)[0]
+        self.assertNotIn("server_.send", reply)
 
     def test_ci_runs_web_contract_before_platformio(self):
         workflow = read(ROOT / ".github" / "workflows" / "platformio.yml")

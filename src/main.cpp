@@ -44,8 +44,10 @@ void setup() {
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
   BLEDevice::init("ESP32_DGLAB_Client");
-  bleManager.begin();
-  webUi.begin();
+  if (!bleManager.begin() || !webUi.begin()) {
+    Serial.println("初始化失败，请重启控制器");
+    for (;;) delay(1000);
+  }
   appLog.add("系统初始化完成");
   appState.lastScanFinished = millis();
   serialCli.begin();
@@ -60,7 +62,7 @@ void loop() {
 
   outputController.handleWaveSend();
   serialCli.handleInput();
-  webUi.handleClient();
+  webUi.processRequest();
   if (bleManager.handleAutoScan()) outputController.onConnected(false);
   delay(10);
 }

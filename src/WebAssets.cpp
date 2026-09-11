@@ -29,6 +29,11 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
       <div><h1>DG-LAB</h1><p id="controller-state">正在连接控制器</p></div>
       <span id="ble-state" class="badge">BLE 未连接</span>
     </header>
+    <p id="action-message" role="status"></p>
+    <div id="resume-output" class="card" hidden>
+      <p>输出已中断，重连原设备后将恢复。</p>
+      <button id="cancel-resume-button" class="danger" type="button">取消恢复输出</button>
+    </div>
 
     <section data-page="status">
       <div id="connected-status" hidden>
@@ -62,7 +67,6 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
           <div class="wave-buttons"><button data-wave="a">A</button><button data-wave="b">B</button><button data-wave="c">C</button></div>
           <button id="output-button" class="primary-wide" type="button">开始输出</button>
         </div>
-        <p id="action-message" role="status"></p>
       </div>
     </section>
 
@@ -80,7 +84,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
   (()=>{'use strict';
   const STATUS_INTERVAL_MS=1000,LOG_INTERVAL_MS=2000;
   const state={status:null,tab:'status',scanRevision:null,statusInFlight:false,logInFlight:false,devicesInFlight:false,actionInFlight:false};
-  let statusTimer=0,logTimer=0,requestTail=Promise.resolve();
+  let statusTimer=0,logTimer=0,requestTail=Promise.resolve(),pendingStop=null;
   const byId=id=>document.getElementById(id);
   const pages=[...document.querySelectorAll('[data-page]')];
   const tabs=[...document.querySelectorAll('[data-tab]')];
@@ -112,6 +116,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
     byId('disconnected-status').hidden=s.connected;
     byId('control-content').hidden=!s.ready;
     byId('control-disabled').hidden=s.ready;
+    byId('resume-output').hidden=s.ready||!s.desiredSending;
     if(s.connected){
       setText('device-name',s.name||'已连接设备');
       setText('device-type',s.type===3?'DG-LAB 3.0':'DG-LAB 2.0');
@@ -141,7 +146,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
   }
 
   async function refreshDevices(){
-    if(document.hidden||state.tab!=='status'||state.status?.connected||state.devicesInFlight)return;
+    if(document.hidden||state.tab!=='status'||state.status?.connected||state.devicesInFlight||state.actionInFlight)return;
     state.devicesInFlight=true;
     try{
       const payload=await request('/api/devices');
@@ -158,7 +163,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
   }
 
   async function refreshLogs(){
-    if(document.hidden||state.tab!=='logs'||state.logInFlight)return;
+    if(document.hidden||state.tab!=='logs'||state.logInFlight||state.actionInFlight)return;
     state.logInFlight=true;
     try{
       const payload=await request('/api/logs');
@@ -169,15 +174,30 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
   }
 
   async function postAction(path,data,button){
-    if(state.actionInFlight)return;
+    if(state.actionInFlight){
+      if(path==='/api/output'&&data.sending===0){
+        pendingStop={path,data,button};
+        if(button)button.disabled=true;
+        setText('action-message','停止请求待发送');
+      }else{
+        setText('action-message','操作处理中，请稍后重试');
+      }
+      return;
+    }
     state.actionInFlight=true;if(button)button.disabled=true;
     try{
       const result=await request(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form(data)});
       if(result.disposition)setText('action-message',result.disposition==='queued'?'强度命令已排队':'强度命令待发送');
+      else setText('action-message',path==='/api/output'&&data.sending===0?'输出已停止，已取消恢复':'操作成功');
     }catch(error){setText('action-message',errorText(error))}
     finally{
       state.actionInFlight=false;if(button)button.disabled=false;
-      await refreshStatus();
+      if(pendingStop){
+        const stop=pendingStop;pendingStop=null;
+        await postAction(stop.path,stop.data,stop.button);
+      }else{
+        await refreshStatus();
+      }
     }
   }
 
@@ -221,6 +241,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
     button.textContent=previous;
   });
   byId('disconnect-button').addEventListener('click',event=>postAction('/api/disconnect',{},event.currentTarget));
+  byId('cancel-resume-button').addEventListener('click',event=>postAction('/api/output',{sending:0},event.currentTarget));
   byId('auto-connect-button').addEventListener('click',event=>postAction('/api/auto-connect',{enabled:state.status?.autoConnect?0:1},event.currentTarget));
   byId('output-button').addEventListener('click',event=>postAction('/api/output',{sending:state.status?.sending?0:1},event.currentTarget));
   document.querySelectorAll('[data-wave]').forEach(button=>button.addEventListener('click',()=>postAction('/api/wave',{type:button.dataset.wave},button)));
